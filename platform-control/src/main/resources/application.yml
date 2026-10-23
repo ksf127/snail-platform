@@ -61,4 +61,4 @@ mybatis-plus:
 
 logging:
   level:
-    com.company.platform: INFO
+    com.snail.platform: INFO

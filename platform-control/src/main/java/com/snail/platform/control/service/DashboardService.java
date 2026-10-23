@@ -1,0 +1,41 @@
+package com.snail.platform.control.service;
+
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.snail.platform.common.model.RunStatus;
+import com.snail.platform.control.dto.DashboardView;
+import com.snail.platform.control.dto.RunView;
+import com.snail.platform.control.entity.PipelineRunEntity;
+import com.snail.platform.control.mapper.PipelineMapper;
+import com.snail.platform.control.mapper.PipelineRunMapper;
+import com.snail.platform.control.mapper.ProjectMapper;
+import com.snail.platform.control.mapper.RepoMapper;
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Service;
+
+import java.util.List;
+
+@Service
+@RequiredArgsConstructor
+public class DashboardService {
+
+    private final ProjectMapper projectMapper;
+    private final RepoMapper repoMapper;
+    private final PipelineMapper pipelineMapper;
+    private final PipelineRunMapper runMapper;
+    private final RunService runService;
+
+    public DashboardView summary() {
+        long projects = projectMapper.selectCount(null);
+        long repos = repoMapper.selectCount(null);
+        long pipelines = pipelineMapper.selectCount(null);
+        long runs = runMapper.selectCount(null);
+        long success = runMapper.selectCount(new LambdaQueryWrapper<PipelineRunEntity>()
+                .eq(PipelineRunEntity::getStatus, RunStatus.SUCCESS.name()));
+        long finished = runMapper.selectCount(new LambdaQueryWrapper<PipelineRunEntity>()
+                .in(PipelineRunEntity::getStatus, RunStatus.SUCCESS.name(), RunStatus.FAILED.name(),
+                        RunStatus.CANCELED.name()));
+        double rate = finished == 0 ? 0.0 : Math.round(success * 1000.0 / finished) / 10.0;
+        List<RunView> recent = runService.list(null, 10);
+        return new DashboardView(projects, repos, pipelines, runs, rate, recent);
+    }
+}
