@@ -1,0 +1,102 @@
+# 部署与执行器
+
+## 一、docker compose（推荐起步）
+
+```bash
+cp .env.example .env      # 修改密码、令牌等
+docker compose up -d --build
+```
+
+包含服务：`mysql`、`rabbitmq`、`minio`、`minio-init`（建 bucket）、`gitea`、`control`、`worker`。Jenkins 使用 profile 单独开启：
+
+```bash
+docker compose --profile jenkins up -d
+```
+
+### 关键路径约束
+
+Docker 执行器通过 `docker run -v <宿主机路径>:/workspace` 挂载源码，因此：
+
+- worker 必须挂载 `/var/run/docker.sock`（compose 已配置）。
+- `WORKSPACE_HOST_DIR` 必须是 **宿主机** 上真实存在的路径，且与 worker 内的 `WORKSPACE_DIR` 指向同一目录（compose 用 `${WORKSPACE_HOST_DIR:-./workspace}:/workspace` 保证）。
+
+如果 worker 运行在容器里但 Docker 在另一台机器上，Docker 执行器不可用，请改用 K8s 执行器。
+
+## 二、环境变量
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `DB_NAME` / `DB_USERNAME` / `DB_PASSWORD` | `platform_db` / `platform` / `platform123` | MySQL |
+| `RABBITMQ_HOST` / `PORT` / `USERNAME` / `PASSWORD` / `VHOST` | localhost / 5672 / platform / platform123 / `/` | 队列 |
+| `MINIO_ENDPOINT` / `ACCESS_KEY` / `SECRET_KEY` / `BUCKET` | http://localhost:9000 / platform / platform123 / platform-artifacts | 制品 |
+| `GITEA_URL` / `GITEA_TOKEN` | 空 | 代码托管；为空时只能手工绑定仓库 |
+| `JWT_SECRET` | dev 值 | 生产必须替换，至少 32 字节 |
+| `INTERNAL_TOKEN` | dev-internal-token | control 与 worker 的内部调用令牌 |
+| `EXECUTOR_DEFAULT` | DOCKER | 未声明执行器时的回退值 |
+| `EXECUTOR_TIMEOUT_SECONDS` | 1800 | 单个步骤/整个远端构建的超时 |
+| `K8S_KUBECONFIG` / `K8S_NAMESPACE` | 空 / platform | K8s 执行器与发布 |
+| `JENKINS_URL` / `USER` / `TOKEN` / `JOB` | 空 | Jenkins 执行器 |
+
+完整清单见 `.env.example`。
+
+## 三、三种执行器
+
+### Docker
+
+```text
+git clone → docker run --rm -v <source>:<workDir> <image> sh -lc "<commands>"
+```
+
+- 优点：零额外基础设施，最接近本地构建。
+- 代价：worker 拥有宿主机 Docker 控制权，等同 root。
+- 适用：单机、内部可信代码。
+
+### Kubernetes
+
+- 每个构建创建一个 Job，initContainer 串行执行 git clone 与各 step，使用 PVC 共享工作区。
+- 需要 worker 具备创建 Job/Pod/PVC 的 RBAC（示例见 `deploy/` 下的 k8s 清单思路，按集群实际调整）。
+- 产物经 Pod 日志回传，体积受日志上限约束（通常几百 KB 到数 MB），大产物建议改用对象存储直传步骤。
+- 适用：多租户、需要隔离和弹性。
+
+### Jenkins
+
+- 约定 Job 接收参数 `REPO_URL`、`BRANCH`、`COMMIT_SHA`、`RUN_ID`，并归档产物。
+- worker 触发 `buildWithParameters`，轮询 `lastBuild`，拉取 `consoleText` 与归档文件。
+- 适用：已有 Jenkins 流水线与凭据体系，不想迁移。
+- `JENKINS_URL` 或 `JENKINS_JOB` 为空时，运行会直接失败并给出明确原因。
+
+## 四、生产部署建议
+
+1. **控制面与 worker 分开部署**，worker 单独一台构建节点或独立命名空间。
+2. 控制面只暴露 8088（或经网关），worker 的 8089 不对公网开放。
+3. MySQL、RabbitMQ、MinIO 使用外部托管或持久卷，不要用 compose 默认密码。
+4. `JWT_SECRET`、`INTERNAL_TOKEN`、`GITEA_TOKEN` 通过 Secret 注入。
+5. 为 worker 设置资源上限（CPU/内存/并发），RabbitMQ `prefetch=1` 已限制单 worker 并发。
+6. 定期清理 MinIO 中过期 run 前缀，日志与制品按项目设置保留期。
+7. 前端 `web` 构建后可用 Nginx 托管 `dist`，并将 `/api` 反向代理到控制面。
+
+## 五、前端发布
+
+```bash
+cd web
+npm ci
+npm run build      # 产物 web/dist
+```
+
+Nginx 关键配置：
+
+```nginx
+location /api/ {
+    proxy_pass http://control:8088/api/;
+    proxy_set_header Host $host;
+}
+location / {
+    root /usr/share/nginx/html;
+    try_files $uri $uri/ /index.html;
+}
+```
+
+## 六、升级
+
+- 表结构通过 Flyway 自动迁移，新增脚本放 `platform-control/src/main/resources/db/migration`，版本号递增。
+- 队列与交换机为 durable，升级期间消息不丢失；先停 worker 再停 control 可避免状态回写失败。

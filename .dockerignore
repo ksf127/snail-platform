@@ -1,0 +1,10 @@
+target/
+.git/
+.idea/
+.vscode/
+web/
+docs/
+workspace/
+*.iml
+*.log
+.env

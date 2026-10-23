@@ -1,0 +1,190 @@
+name: snail-platform
+
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: platform-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root123}
+      MYSQL_DATABASE: ${DB_NAME:-platform_db}
+      MYSQL_USER: ${DB_USERNAME:-platform}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-platform123}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-u", "root", "-p${MYSQL_ROOT_PASSWORD:-root123}"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: platform-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-platform}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-platform123}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-/}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2024-09-13T20-26-02Z
+    container_name: platform-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-platform}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-platform123}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2024-09-16T17-43-14Z
+    container_name: platform-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 '${MINIO_ROOT_USER:-platform}' '${MINIO_ROOT_PASSWORD:-platform123}' &&
+      mc mb --ignore-existing local/${MINIO_BUCKET:-platform-artifacts} &&
+      mc anonymous set none local/${MINIO_BUCKET:-platform-artifacts} &&
+      echo 'minio bucket ready';
+      "
+    restart: "no"
+
+  gitea:
+    image: gitea/gitea:1.22
+    container_name: platform-gitea
+    environment:
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__server__ROOT_URL: ${GITEA_ROOT_URL:-http://localhost:3000/}
+      GITEA__server__HTTP_PORT: "3000"
+      GITEA__service__DISABLE_REGISTRATION: "false"
+      GITEA__database__DB_TYPE: sqlite3
+      GITEA__security__SECRET_KEY: change-me-gitea-secret
+    ports:
+      - "3000:3000"
+      - "2222:22"
+    volumes:
+      - gitea-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/healthz || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  control:
+    build:
+      context: .
+      dockerfile: platform-control/Dockerfile
+    container_name: platform-control
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      DB_URL: jdbc:mysql://mysql:3306/${DB_NAME:-platform_db}?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8
+      DB_USERNAME: ${DB_USERNAME:-platform}
+      DB_PASSWORD: ${DB_PASSWORD:-platform123}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-platform}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-platform123}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-platform}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-platform123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-platform-artifacts}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-please-change-0123456789abcdef}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      GITEA_URL: ${GITEA_URL:-http://gitea:3000}
+      GITEA_TOKEN: ${GITEA_TOKEN:-}
+      K8S_KUBECONFIG: ${K8S_KUBECONFIG:-}
+      K8S_NAMESPACE: ${K8S_NAMESPACE:-platform}
+      EXECUTOR_DEFAULT: ${EXECUTOR_DEFAULT:-DOCKER}
+    ports:
+      - "8088:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8088/actuator/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+
+  worker:
+    build:
+      context: .
+      dockerfile: platform-worker/Dockerfile
+    container_name: platform-worker
+    depends_on:
+      control:
+        condition: service_started
+      rabbitmq:
+        condition: service_healthy
+    environment:
+      CONTROL_URL: http://control:8088
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: "5672"
+      RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-platform}
+      RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-platform123}
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-platform}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-platform123}
+      MINIO_BUCKET: ${MINIO_BUCKET:-platform-artifacts}
+      WORKSPACE_DIR: /workspace
+      EXECUTOR_DEFAULT: ${EXECUTOR_DEFAULT:-DOCKER}
+      EXECUTOR_TIMEOUT_SECONDS: ${EXECUTOR_TIMEOUT_SECONDS:-1800}
+      K8S_KUBECONFIG: ${K8S_KUBECONFIG:-}
+      K8S_NAMESPACE: ${K8S_NAMESPACE:-platform}
+      K8S_GIT_IMAGE: ${K8S_GIT_IMAGE:-alpine/git:latest}
+      K8S_TOOL_IMAGE: ${K8S_TOOL_IMAGE:-alpine:3.20}
+      K8S_WORKSPACE_SIZE: ${K8S_WORKSPACE_SIZE:-1Gi}
+    volumes:
+      # 使用宿主机目录（而非命名卷），保证 docker run -v 的路径在宿主机可解析
+      - ${WORKSPACE_HOST_DIR:-./workspace}:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8089:8089"
+
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    container_name: platform-jenkins
+    profiles: ["jenkins"]
+    environment:
+      JAVA_OPTS: -Djenkins.install.runSetupWizard=false
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:-admin123}
+    ports:
+      - "8081:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins-data:/var/jenkins_home
+
+volumes:
+  mysql-data:
+  rabbitmq-data:
+  minio-data:
+  gitea-data:
+  jenkins-data:

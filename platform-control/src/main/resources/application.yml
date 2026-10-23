@@ -1,0 +1,64 @@
+server:
+  port: 8088
+
+spring:
+  application:
+    name: platform-control
+  datasource:
+    url: ${DB_URL:jdbc:mysql://localhost:3306/platform_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Shanghai&characterEncoding=utf8}
+    username: ${DB_USERNAME:platform}
+    password: ${DB_PASSWORD:platform123}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:platform}
+    password: ${RABBITMQ_PASSWORD:platform123}
+    virtual-host: ${RABBITMQ_VHOST:/}
+    publisher-confirm-type: correlated
+    publisher-returns: true
+  jackson:
+    default-property-inclusion: non_null
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: always
+  metrics:
+    tags:
+      application: platform-control
+
+platform:
+  jwt:
+    secret: ${JWT_SECRET:dev-only-jwt-secret-please-change-0123456789abcdef}
+    expire-minutes: 720
+  internal-token: ${INTERNAL_TOKEN:dev-internal-token}
+  executor:
+    default: ${EXECUTOR_DEFAULT:DOCKER}
+  minio:
+    endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+    access-key: ${MINIO_ACCESS_KEY:platform}
+    secret-key: ${MINIO_SECRET_KEY:platform123}
+    bucket: ${MINIO_BUCKET:platform-artifacts}
+  gitea:
+    url: ${GITEA_URL:}
+    token: ${GITEA_TOKEN:}
+  k8s:
+    kubeconfig: ${K8S_KUBECONFIG:}
+    namespace: ${K8S_NAMESPACE:platform}
+
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+  global-config:
+    banner: false
+
+logging:
+  level:
+    com.company.platform: INFO
