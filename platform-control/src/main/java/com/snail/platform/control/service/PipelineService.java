@@ -79,8 +79,13 @@ public class PipelineService {
         }
         if (StringUtils.hasText(keyword)) {
             String value = keyword.trim();
-            wrapper.and(w -> w.like(PipelineEntity::getName, value)
-                    .or().like(PipelineEntity::getBranch, value));
+            List<Long> matchedProjectIds = projectService.idsByKeyword(value);
+            wrapper.and(w -> {
+                w.like(PipelineEntity::getName, value);
+                if (!matchedProjectIds.isEmpty()) {
+                    w.or().in(PipelineEntity::getProjectId, matchedProjectIds);
+                }
+            });
         }
         if (StringUtils.hasText(triggerType)) {
             wrapper.eq(PipelineEntity::getTriggerType, triggerType.trim().toUpperCase(Locale.ROOT));

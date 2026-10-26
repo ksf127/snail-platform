@@ -827,7 +827,7 @@ export default function PipelinesPage() {
         <form className="filters" onSubmit={applyFilters}>
           <input
             value={draft.keyword}
-            placeholder="搜索流水线名称或分支"
+            placeholder="搜索流水线名称或所属项目"
             onChange={(e) => updateDraft({ keyword: e.target.value })}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {

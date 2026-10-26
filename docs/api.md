@@ -49,7 +49,7 @@
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/api/pipelines?projectId=1&branch=main&team=后端组` | 登录 | 流水线列表；`branch` 精确过滤，`team` 按「项目 + 分支」归属过滤 |
+| GET | `/api/pipelines?projectId=1&branch=main&team=后端组&keyword=构建` | 登录 | 流水线列表；`keyword` 模糊匹配流水线名称或所属项目，`branch` 精确过滤，`team` 按「项目 + 分支」归属过滤 |
 | GET | `/api/pipelines/{id}` | 登录 | 详情 |
 | POST | `/api/pipelines` | ADMIN/DEVELOPER | 创建，字段见下 |
 | PUT | `/api/pipelines/{id}` | ADMIN/DEVELOPER | 修改（不允许移动项目） |
