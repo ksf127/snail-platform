@@ -71,5 +71,5 @@ worker   ──── 构建节点 Docker / K8s 集群
 - 未做服务端令牌吊销，登出仅清前端；缩短 `platform.jwt.expire-minutes` 可降低风险。
 - 未内置审计日志表，敏感操作审计需在网关层或数据库层补充。
 - 未做多租户硬隔离，跨项目访问控制依赖成员表与后续增强。
-- Jenkins 执行器尚未注入平台 secrets；Docker 的 `-e` 与 git clone URL 中的 token 在宿主机进程参数中可见。
+- Docker 的 `-e` 与 git clone URL 中的 token 在宿主机进程参数中可见；Jenkins 的 `SECRETS_JSON` / `GIT_TOKEN` 通过表单体下发，但作为构建参数仍保留在 Jenkins 记录中，高敏感环境应改用 Jenkins Credentials ID 模式。
 - `PLATFORM_CRYPTO_KEY` 丢失会导致已有密文无法解密，需与数据库一并备份。

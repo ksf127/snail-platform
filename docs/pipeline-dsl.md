@@ -83,7 +83,7 @@ steps:
 ## 注意事项
 
 - 不要在 `commands` 里写交互式命令，容器没有 TTY。
-- 构建环境变量 = 镜像自带环境 + 项目「构建变量」（secrets）注入。Docker 以 `-e NAME=value` 传入，K8s 写入容器 env；Jenkins 执行器当前未注入平台 secrets。
+- 构建环境变量 = 镜像自带环境 + 项目「构建变量」（secrets）注入。Docker 以 `-e NAME=value` 传入，K8s 写入容器 env，Jenkins 以 `SECRETS_JSON` / `GIT_TOKEN` 表单参数下发并由 Job 注入；三者均由 worker 日志层统一脱敏。
 - 日志会脱敏：URL 中的 userinfo 与已知 token / secret 值会替换为掩码，但仓库命令自行打印的其他敏感信息仍需自行规避。
 - `artifacts` 使用 JDK `PathMatcher` 的 glob 语法，`**` 表示任意层级。
 - 每次运行工作目录为 `<WORKSPACE_DIR>/run-<runId>`，结束后自动清理。

@@ -5,9 +5,12 @@ import com.snail.platform.common.model.ExecutorType;
 import com.snail.platform.worker.build.BuildContext;
 import com.snail.platform.worker.build.LogSink;
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClient;
 
 import java.io.File;
@@ -17,10 +20,14 @@ import java.nio.file.Path;
 import java.nio.file.PathMatcher;
 import java.nio.file.StandardOpenOption;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 通过 Jenkins 远端 Job 执行构建。约定 Job 接收 REPO_URL / BRANCH / COMMIT_SHA / RUN_ID 参数，
- * 并归档产物；worker 轮询 lastBuild 后拉取 consoleText 与归档产物。
+ * 并通过 GIT_USERNAME / GIT_TOKEN / SECRETS_JSON 接收仓库凭据与项目构建变量；构建完成后归档产物，
+ * worker 轮询 lastBuild 后拉取 consoleText 与归档产物。
+ *
+ * <p>参数统一使用表单体提交（不使用 URL query），避免凭据出现在 Jenkins / 反向代理访问日志中。
  */
 @Component
 public class JenkinsBuildExecutor implements BuildExecutor {
@@ -31,6 +38,7 @@ public class JenkinsBuildExecutor implements BuildExecutor {
     private final String job;
     private final long pollIntervalSeconds;
     private final long timeoutSeconds;
+    private final ObjectMapper objectMapper;
     private final RestClient restClient;
 
     public JenkinsBuildExecutor(@Value("${platform.jenkins.url:}") String url,
@@ -38,13 +46,15 @@ public class JenkinsBuildExecutor implements BuildExecutor {
                                 @Value("${platform.jenkins.token:}") String token,
                                 @Value("${platform.jenkins.job:}") String job,
                                 @Value("${platform.executor.poll-interval-seconds:3}") long pollIntervalSeconds,
-                                @Value("${platform.executor.timeout-seconds:1800}") long timeoutSeconds) {
+                                @Value("${platform.executor.timeout-seconds:1800}") long timeoutSeconds,
+                                ObjectMapper objectMapper) {
         this.url = url == null ? "" : url.trim().replaceAll("/+$", "");
         this.user = user == null ? "" : user.trim();
         this.token = token == null ? "" : token.trim();
         this.job = job == null ? "" : job.trim();
         this.pollIntervalSeconds = pollIntervalSeconds;
         this.timeoutSeconds = timeoutSeconds;
+        this.objectMapper = objectMapper;
         this.restClient = buildClient();
     }
 
@@ -59,14 +69,14 @@ public class JenkinsBuildExecutor implements BuildExecutor {
             throw new IllegalStateException("Jenkins 未配置（JENKINS_URL / JENKINS_JOB），无法使用 JENKINS 执行器");
         }
         int previous = lastBuildNumber();
-        sink.line("[jenkins] 触发 Job " + job + "，参数 RUN_ID=" + context.getRunId());
+        int secretCount = context.getSecrets() == null ? 0 : context.getSecrets().size();
+        sink.line("[jenkins] 触发 Job " + job + "，参数 RUN_ID=" + context.getRunId()
+                + (secretCount > 0 ? "，注入构建变量 " + secretCount + " 个" : "")
+                + (hasRepoCredential(context) ? "，注入仓库凭据" : ""));
         restClient.post()
-                .uri(builder -> builder.path("/job/{job}/buildWithParameters")
-                        .queryParam("REPO_URL", nullSafe(context.getRepoUrl()))
-                        .queryParam("BRANCH", nullSafe(context.getBranch()))
-                        .queryParam("COMMIT_SHA", nullSafe(context.getCommitSha()))
-                        .queryParam("RUN_ID", context.getRunId())
-                        .build(job))
+                .uri(builder -> builder.path("/job/{job}/buildWithParameters").build(job))
+                .contentType(MediaType.APPLICATION_FORM_URLENCODED)
+                .body(parameters(context))
                 .retrieve()
                 .toBodilessEntity();
 
@@ -87,6 +97,27 @@ public class JenkinsBuildExecutor implements BuildExecutor {
         }
         sink.line("[jenkins] 构建 #" + info.number() + " 成功");
         downloadArtifacts(context, sink, info);
+    }
+
+    private MultiValueMap<String, String> parameters(BuildContext context) throws Exception {
+        MultiValueMap<String, String> form = new LinkedMultiValueMap<>();
+        form.add("REPO_URL", nullSafe(context.getRepoUrl()));
+        form.add("BRANCH", nullSafe(context.getBranch()));
+        form.add("COMMIT_SHA", nullSafe(context.getCommitSha()));
+        form.add("RUN_ID", String.valueOf(context.getRunId()));
+        if (hasRepoCredential(context)) {
+            form.add("GIT_USERNAME", nullSafe(context.getRepoUsername()));
+            form.add("GIT_TOKEN", context.getRepoToken().trim());
+        }
+        Map<String, String> secrets = context.getSecrets();
+        if (secrets != null && !secrets.isEmpty()) {
+            form.add("SECRETS_JSON", objectMapper.writeValueAsString(secrets));
+        }
+        return form;
+    }
+
+    private boolean hasRepoCredential(BuildContext context) {
+        return context.getRepoToken() != null && !context.getRepoToken().isBlank();
     }
 
     private JenkinsBuildInfo waitForBuild(int previous) throws InterruptedException {

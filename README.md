@@ -154,7 +154,7 @@ mvn -B -ntp package     # 生成 platform-control / platform-worker 可执行 ja
 
 - 变量名需匹配 `[A-Za-z_][A-Za-z0-9_]{0,63}`，同一项目内唯一。
 - 值使用 AES-256-GCM 加密存储；列表只返回 `****1234` 形式的掩码。
-- 构建时解密并注入 Docker `-e` / K8s 容器环境变量，日志中出现的变量值会被替换为掩码。
+- 构建时解密并注入 Docker `-e` / K8s 容器环境变量 / Jenkins 构建参数，日志中出现的变量值会被替换为掩码。
 - 加密密钥来自 `PLATFORM_CRYPTO_KEY`；未配置时从 `JWT_SECRET` 派生，生产环境应显式配置。
 
 ### 并发与去重

@@ -63,9 +63,56 @@ git clone → docker run --rm -v <source>:<workDir> <image> sh -lc "<commands>"
 ### Jenkins
 
 - 约定 Job 接收参数 `REPO_URL`、`BRANCH`、`COMMIT_SHA`、`RUN_ID`，并归档产物。
-- worker 触发 `buildWithParameters`，轮询 `lastBuild`，拉取 `consoleText` 与归档文件。
+- worker 通过 `POST /job/{job}/buildWithParameters` 以 **表单体** 提交参数（不走 URL query，避免凭据进入访问日志），轮询 `lastBuild`，拉取 `consoleText` 与归档文件。
+- 构建变量与仓库凭据通过参数下发：
+  - `GIT_USERNAME` / `GIT_TOKEN`：仓库访问凭据，仅在仓库配置了 token 时传入；
+  - `SECRETS_JSON`：项目构建变量的 JSON 对象（`{"NPM_TOKEN":"..."}`），没有变量时不传，使用 Job 默认值 `{}`。
+- Job 需把这三个参数声明为 `password` 类型（UI 掩码），并在执行前注入环境变量；建议安装 `mask-passwords` 插件兜底控制台输出。
 - 适用：已有 Jenkins 流水线与凭据体系，不想迁移。
 - `JENKINS_URL` 或 `JENKINS_JOB` 为空时，运行会直接失败并给出明确原因。
+
+Job 参数与注入示例（Jenkinsfile）：
+
+```groovy
+pipeline {
+  agent any
+  parameters {
+    string(name: 'REPO_URL')
+    string(name: 'BRANCH', defaultValue: 'main')
+    string(name: 'COMMIT_SHA', defaultValue: '')
+    string(name: 'RUN_ID')
+    password(name: 'GIT_USERNAME', defaultValue: '')
+    password(name: 'GIT_TOKEN', defaultValue: '')
+    password(name: 'SECRETS_JSON', defaultValue: '{}')
+  }
+  stages {
+    stage('build') {
+      steps {
+        script {
+          def secrets = new groovy.json.JsonSlurper().parseText(params.SECRETS_JSON ?: '{}')
+          // 需要 mask-passwords 插件；未安装时 Job 内不要 echo 变量值
+          wrap([$class: 'MaskPasswordsBuildWrapper',
+                varPasswordPairs: secrets.collect { k, v -> [var: k, password: v] }]) {
+            secrets.each { k, v -> env[k] = v }
+            env.GIT_USERNAME = params.GIT_USERNAME
+            env.GIT_TOKEN = params.GIT_TOKEN
+            // 后续 sh 步骤使用 $NPM_TOKEN 等变量
+          }
+        }
+      }
+    }
+  }
+  post {
+    always { archiveArtifacts artifacts: '**/target/*.jar', allowEmptyArchive: true }
+  }
+}
+```
+
+安全边界：
+
+- `password` 参数只在 Job 配置页掩码，构建参数仍保存在 Jenkins build 记录中；拥有 Job 读取权限的人可通过 API 看到。对高敏感环境，建议改用 Jenkins Credentials：由运维在 Jenkins 预建 `string` / `usernamePassword` 凭据，平台只传凭据 ID（后续可扩展 `CREDENTIALS_MAP` 参数），Job 用 `withCredentials` 绑定，避免明文进入构建参数。
+- worker 侧 `MaskingLogSink` 仍会对拉回的 `consoleText` 做二次脱敏并写入 MinIO，但 Jenkins 自身的控制台历史不会被回写。
+- Jenkins 由 `--profile jenkins` 启动，Job 的 `REPO_URL` 必须能从 Jenkins 容器访问（localhost 指向容器自身，需用宿主机地址或 compose 服务名）。
 
 ## 四、多环境发布
 
