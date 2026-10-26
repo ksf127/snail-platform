@@ -46,6 +46,7 @@ export interface Repo {
   cloneUrl: string;
   defaultBranch: string;
   webhookConfigured: boolean;
+  credentialConfigured: boolean;
 }
 
 export interface RepoCreated {
@@ -63,6 +64,7 @@ export interface Pipeline {
   executorType: string;
   side: PipelineSide;
   definitionJson: string;
+  configPath: string | null;
   enabled: boolean;
   team?: string | null;
   createdAt: string;
@@ -180,4 +182,21 @@ export interface PipelineStep {
   commands: string[];
   workDir?: string;
   artifacts?: string[];
+}
+
+/** 项目构建变量：接口只返回掩码。 */
+export interface ProjectSecret {
+  id: number;
+  projectId: number;
+  name: string;
+  maskedValue: string;
+  description: string | null;
+  updatedAt: string;
+}
+
+export interface PipelineYamlView {
+  yaml: string;
+  definitionJson: string;
+  configPath: string | null;
+  source: string;
 }

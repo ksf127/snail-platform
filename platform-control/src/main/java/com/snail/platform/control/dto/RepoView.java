@@ -8,6 +8,7 @@ public record RepoView(
         String externalId,
         String cloneUrl,
         String defaultBranch,
-        boolean webhookConfigured
+        boolean webhookConfigured,
+        boolean credentialConfigured
 ) {
 }

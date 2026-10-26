@@ -8,6 +8,10 @@ public record BindRepoRequest(
         @NotBlank(message = "仓库名不能为空") String name,
         @NotBlank(message = "cloneUrl 不能为空") String cloneUrl,
         String defaultBranch,
-        String webhookSecret
+        String webhookSecret,
+        /** 私有仓库用户名，可空。 */
+        String username,
+        /** 私有仓库令牌，落库前加密，接口不回显。 */
+        String token
 ) {
 }

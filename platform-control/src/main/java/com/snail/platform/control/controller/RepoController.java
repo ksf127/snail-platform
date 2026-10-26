@@ -5,6 +5,7 @@ import com.snail.platform.control.dto.BindRepoRequest;
 import com.snail.platform.control.dto.CreateRepoRequest;
 import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.RepoCreatedView;
+import com.snail.platform.control.dto.RepoCredentialRequest;
 import com.snail.platform.control.dto.RepoView;
 import com.snail.platform.control.service.RepoService;
 import jakarta.validation.Valid;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -63,5 +65,27 @@ public class RepoController {
     public ApiResult<Void> delete(@PathVariable Long id) {
         repoService.delete(id);
         return ApiResult.ok();
+    }
+
+    /** 保存/覆盖仓库访问凭据（GitHub PAT / Gitea token），仅加密入库，不回显。 */
+    @PutMapping("/{id}/credential")
+    @PreAuthorize("hasAnyRole('ADMIN','DEVELOPER')")
+    public ApiResult<RepoView> saveCredential(@PathVariable Long id,
+                                              @Valid @RequestBody RepoCredentialRequest request) {
+        return ApiResult.ok(repoService.saveCredential(id, request.username(), request.token()));
+    }
+
+    @DeleteMapping("/{id}/credential")
+    @PreAuthorize("hasRole('ADMIN')")
+    public ApiResult<Void> deleteCredential(@PathVariable Long id) {
+        repoService.deleteCredential(id);
+        return ApiResult.ok();
+    }
+
+    /** 查看 webhook 密钥，用于在 GitHub/Gitea 侧配置 webhook。 */
+    @GetMapping("/{id}/webhook-secret")
+    @PreAuthorize("hasAnyRole('ADMIN','DEVELOPER')")
+    public ApiResult<Map<String, String>> webhookSecret(@PathVariable Long id) {
+        return ApiResult.ok(Map.of("secret", repoService.webhookSecret(id)));
     }
 }

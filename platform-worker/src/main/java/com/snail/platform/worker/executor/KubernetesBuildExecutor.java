@@ -129,7 +129,7 @@ public class KubernetesBuildExecutor implements BuildExecutor {
         List<Container> initContainers = new ArrayList<>();
         initContainers.add(cloneContainer(context));
         for (int i = 0; i < steps.size(); i++) {
-            initContainers.add(stepContainer(steps.get(i), i));
+            initContainers.add(stepContainer(context, steps.get(i), i));
         }
         Container export = new ContainerBuilder()
                 .withName("export")
@@ -168,42 +168,61 @@ public class KubernetesBuildExecutor implements BuildExecutor {
     }
 
     private Container cloneContainer(BuildContext context) {
+        boolean hasToken = context.getRepoToken() != null && !context.getRepoToken().isBlank();
+        String repoUrl = context.getRepoUrl();
+        String cloneTarget;
+        if (hasToken && repoUrl != null && repoUrl.regionMatches(true, 0, "http", 0, 4)) {
+            // 令牌通过环境变量注入，不写进 Job 定义，也不出现在日志中。
+            String hostAndPath = repoUrl.substring(repoUrl.indexOf("://") + 3);
+            cloneTarget = "\"https://${GIT_USERNAME}:${GIT_TOKEN}@" + hostAndPath + "\"";
+        } else {
+            cloneTarget = shellQuote(repoUrl);
+        }
         StringBuilder script = new StringBuilder("git clone --depth 1 ");
         if (context.getBranch() != null && !context.getBranch().isBlank()) {
             script.append("--branch ").append(shellQuote(context.getBranch())).append(' ');
         }
-        script.append(shellQuote(context.getRepoUrl())).append(' ').append(WORKSPACE);
+        script.append(cloneTarget).append(' ').append(WORKSPACE);
         if (context.getCommitSha() != null && !context.getCommitSha().isBlank()) {
             script.append(" && cd ").append(WORKSPACE)
                     .append(" && (git checkout ").append(shellQuote(context.getCommitSha()))
                     .append(" || true)");
         }
-        return new ContainerBuilder()
+        ContainerBuilder builder = new ContainerBuilder()
                 .withName("clone")
                 .withImage(gitImage)
                 .withWorkingDir(WORKSPACE)
                 .withCommand("sh", "-lc")
                 .withArgs(script.toString())
-                .addNewEnv().withName("GIT_TERMINAL_PROMPT").withValue("0").endEnv()
+                .addNewEnv().withName("GIT_TERMINAL_PROMPT").withValue("0").endEnv();
+        if (hasToken) {
+            String username = context.getRepoUsername() == null || context.getRepoUsername().isBlank()
+                    ? "git" : context.getRepoUsername().trim();
+            builder.addNewEnv().withName("GIT_USERNAME").withValue(username).endEnv()
+                    .addNewEnv().withName("GIT_TOKEN").withValue(context.getRepoToken().trim()).endEnv();
+        }
+        return builder
                 .addNewVolumeMount().withName("workspace").withMountPath(WORKSPACE).endVolumeMount()
                 .build();
     }
 
-    private Container stepContainer(BuildStep step, int index) {
+    private Container stepContainer(BuildContext context, BuildStep step, int index) {
         String workDir = step.getWorkDir() == null || step.getWorkDir().isBlank()
                 ? WORKSPACE : step.getWorkDir();
         if (!workDir.equals(WORKSPACE) && !workDir.startsWith(WORKSPACE + "/")) {
             throw new IllegalStateException("K8S 执行器要求步骤 " + step.getName()
                     + " 的 workDir 位于 " + WORKSPACE + " 之下，当前为 " + workDir);
         }
-        return new ContainerBuilder()
+        ContainerBuilder builder = new ContainerBuilder()
                 .withName("step-" + (index + 1))
                 .withImage(step.getImage())
                 .withWorkingDir(workDir)
                 .withCommand("sh", "-lc")
                 .withArgs(String.join("\n", step.getCommands()))
-                .addNewVolumeMount().withName("workspace").withMountPath(WORKSPACE).endVolumeMount()
-                .build();
+                .addNewVolumeMount().withName("workspace").withMountPath(WORKSPACE).endVolumeMount();
+        context.getSecrets().forEach((name, value) ->
+                builder.addNewEnv().withName(name).withValue(value).endEnv());
+        return builder.build();
     }
 
     /**

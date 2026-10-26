@@ -10,8 +10,10 @@
 | --- | --- |
 | 账号与权限 | 用户名密码登录、JWT、ADMIN / DEVELOPER / VIEWER 三种角色 |
 | 项目管理 | 项目、成员、状态 |
-| 代码托管 | 对接 Gitea（创建仓库、Webhook push 触发），也支持手工绑定任意 cloneUrl |
-| 流水线 | 可视化编辑 steps JSON、多分支（精确分支或 `*`）、按团队归属、手动触发、Webhook 触发、取消、运行历史 |
+| 代码托管 | 对接 Gitea（创建仓库、Webhook push 触发），也支持手工绑定任意 cloneUrl；GitHub push 同样可触发 |
+| 流水线 | YAML / JSON 可视化编辑、配置即代码（仓库内 `.snail/pipeline.yml`）、多分支（精确分支或 `*`）、按团队归属、手动 / Webhook 触发、运行历史 |
+| 构建变量 | 项目级 secrets 加密入库，接口与日志只出现掩码，构建时注入容器环境变量 |
+| 并发控制 | 同一流水线排队上限（默认 3），Webhook 同仓库/分支/commit 去重 |
 | 多团队协作 | 项目内登记分支归属（团队 / 负责人 / 说明），流水线列表按分支回填团队并支持团队筛选 |
 | 多环境发布 | 项目级环境配置（DEV/TEST/PROD 可增删改），每个环境独立 K8s namespace 与默认副本，发布单按环境固化 namespace |
 | 构建执行 | Docker（默认）/ Kubernetes Job / Jenkins 三种执行器，控制面与执行面分离 |
@@ -108,6 +110,15 @@ mvn -B -ntp package     # 生成 platform-control / platform-worker 可执行 ja
 
 没有 Gitea 时可直接用「绑定仓库」填任意 `cloneUrl`（provider=GENERIC），手动触发流水线。
 
+## GitHub Webhook
+
+1. 在「仓库」页手工绑定 GitHub 仓库：Clone URL 填 `https://github.com/<owner>/<repo>.git`，可同时填写用户名与 PAT（私有仓库必填）。
+2. 在 GitHub 仓库 Settings → Webhooks 添加 `http://<control-host>:8088/api/webhooks/github`：
+   - Content type 选 `application/json`；
+   - Secret 填平台生成并保存的 webhook secret；
+   - 事件勾选 `Just the push event`。
+3. 平台校验 `X-Hub-Signature-256`（HMAC-SHA256，原始请求体），匹配仓库后按分支触发 `WEBHOOK` 流水线；`ping` 事件返回空列表。
+
 ## 流水线定义
 
 ```json
@@ -125,6 +136,32 @@ mvn -B -ntp package     # 生成 platform-control / platform-worker 可执行 ja
 ```
 
 详见 [docs/pipeline-dsl.md](docs/pipeline-dsl.md)。
+
+## 配置即代码与构建变量
+
+### 流水线 YAML（仓库优先）
+
+流水线可填写「配置路径」（如 `.snail/pipeline.yml`）。触发时 control 会从该仓库的目标分支 / commit 读取 YAML，校验后写入本次 run 快照，worker 按快照执行：
+
+- 配置在仓库时以仓库文件为准，平台内 JSON 仅作预览；路径留空则沿用平台定义。
+- 读取失败、YAML 非法或步骤不完整会在触发前报错，不会产生「幽灵运行」。
+- GitHub 走 Contents API（公开仓库匿名可读，私有仓库需配置访问凭据）；Gitea 走原生 raw API。
+- 流水线编辑页可「读取当前 YAML / 从仓库同步 / 导入 YAML」，导入不会改变 configPath。
+
+### 项目构建变量（secrets）
+
+项目详情页「构建变量」维护构建期环境变量：
+
+- 变量名需匹配 `[A-Za-z_][A-Za-z0-9_]{0,63}`，同一项目内唯一。
+- 值使用 AES-256-GCM 加密存储；列表只返回 `****1234` 形式的掩码。
+- 构建时解密并注入 Docker `-e` / K8s 容器环境变量，日志中出现的变量值会被替换为掩码。
+- 加密密钥来自 `PLATFORM_CRYPTO_KEY`；未配置时从 `JWT_SECRET` 派生，生产环境应显式配置。
+
+### 并发与去重
+
+- `platform.build.max-queued-per-pipeline`（默认 3）：同一流水线 QUEUED 达到上限后，新的触发返回 409。
+- Webhook 对同一 pipeline + 分支 + commit 且状态为 QUEUED/RUNNING/SUCCESS 的运行直接跳过，避免重投重复构建。
+- 实际执行串行仍由 worker `prefetch=1` 保证，排队上限用于抑制无上限堆积。
 
 ## 多分支与多环境
 

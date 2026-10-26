@@ -17,6 +17,8 @@ public class PipelineRunEntity {
     private Integer buildNo;
     private String status;
     private String commitSha;
+    /** 触发时解析出的流水线定义快照：配置在仓库时，保证执行内容与触发时一致。 */
+    private String resolvedDefinition;
     private String branch;
     private String triggerType;
     private String triggeredBy;

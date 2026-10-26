@@ -39,6 +39,12 @@ platform:
     secret: ${JWT_SECRET:dev-only-jwt-secret-please-change-0123456789abcdef}
     expire-minutes: 720
   internal-token: ${INTERNAL_TOKEN:dev-internal-token}
+  # 敏感数据（项目变量、仓库令牌）加密密钥；生产必须单独配置并妥善保管。
+  crypto:
+    key: ${PLATFORM_CRYPTO_KEY:}
+  build:
+    # 同一流水线允许排队的构建数，超出直接拒绝，避免重复触发堆积。
+    max-queued-per-pipeline: ${MAX_QUEUED_PER_PIPELINE:3}
   executor:
     default: ${EXECUTOR_DEFAULT:DOCKER}
   minio:

@@ -6,6 +6,7 @@ import lombok.Getter;
 
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 一次构建执行所需的全部上下文。rootDir 是本次运行的独立工作目录。
@@ -18,6 +19,9 @@ public class BuildContext {
     private final Long pipelineId;
     private final String projectKey;
     private final String repoUrl;
+    private final String repoUsername;
+    private final String repoToken;
+    private final Map<String, String> secrets;
     private final String branch;
     private final String commitSha;
     private final Path rootDir;

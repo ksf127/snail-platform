@@ -21,9 +21,11 @@ import com.snail.platform.control.mapper.RepoMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 /** worker 专用的内部能力：拉取执行上下文、回报状态、登记制品。 */
 @Service
@@ -35,6 +37,8 @@ public class InternalService {
     private final RepoMapper repoMapper;
     private final ProjectMapper projectMapper;
     private final BuildArtifactMapper artifactMapper;
+    private final RepoCredentialService repoCredentialService;
+    private final ProjectSecretService projectSecretService;
     private final ObjectMapper objectMapper;
 
     public InternalRunContext context(Long runId) {
@@ -48,17 +52,24 @@ public class InternalService {
         }
         RepoEntity repo = pipeline.getRepoId() == null ? null : repoMapper.selectById(pipeline.getRepoId());
         ProjectEntity project = projectMapper.selectById(pipeline.getProjectId());
+        String definitionJson = StringUtils.hasText(run.getResolvedDefinition())
+                ? run.getResolvedDefinition() : pipeline.getDefinitionJson();
         List<BuildStep> steps;
         try {
-            PipelineDefinition definition = objectMapper.readValue(pipeline.getDefinitionJson(), PipelineDefinition.class);
+            PipelineDefinition definition = objectMapper.readValue(definitionJson, PipelineDefinition.class);
             steps = definition.getSteps() == null ? List.of() : definition.getSteps();
         } catch (Exception ex) {
             throw BizException.badRequest("流水线定义无法解析: " + ex.getMessage());
         }
+        RepoCredentialService.Credential credential = repo == null ? null
+                : repoCredentialService.find(repo.getId());
         return new InternalRunContext(run.getId(), pipeline.getId(),
                 project == null ? null : project.getProjectKey(),
                 repo == null ? null : repo.getCloneUrl(),
-                run.getBranch(), run.getCommitSha(), pipeline.getExecutorType(), steps);
+                run.getBranch(), run.getCommitSha(), pipeline.getExecutorType(), steps,
+                credential == null ? null : credential.username(),
+                credential == null ? null : credential.token(),
+                project == null ? Map.of() : projectSecretService.envOf(project.getId()));
     }
 
     public void updateStatus(Long runId, RunStatusUpdate update) {

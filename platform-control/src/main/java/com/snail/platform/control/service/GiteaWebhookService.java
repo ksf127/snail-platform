@@ -51,6 +51,6 @@ public class GiteaWebhookService {
         if (sha == null || sha.isBlank()) {
             sha = root.path("head_commit").path("id").asText(null);
         }
-        return pipelineService.triggerWebhook(repo, branch, sha);
+        return pipelineService.triggerWebhook(repo, branch, sha, "gitea-webhook");
     }
 }

@@ -14,16 +14,21 @@
 | 密钥 | 存放 | 要求 |
 | --- | --- | --- |
 | `JWT_SECRET` | Secret / 环境变量 | ≥ 32 字节随机值，轮换后旧 token 立即失效 |
+| `PLATFORM_CRYPTO_KEY` | Secret / 环境变量 | 构建变量与仓库 token 的加密密钥；为空时从 `JWT_SECRET` 派生，生产必须显式配置并备份 |
 | `INTERNAL_TOKEN` | Secret / 环境变量 | 仅 control 与 worker 共享，禁止下发到前端 |
 | `GITEA_TOKEN` | Secret | 最小权限：仅目标组织的仓库与 webhook 权限 |
 | `MINIO_ACCESS_KEY/SECRET_KEY` | Secret | 只授权 `platform-artifacts` bucket |
 | `RABBITMQ_*` | Secret | 独立 vhost 与账号 |
 | `DB_PASSWORD` | Secret | 最小权限账号，禁止 root |
 | 仓库 `webhook_secret` | 数据库 | 每个仓库独立；验签失败直接拒绝 |
+| `project_secret.value_cipher` | 数据库 | 项目构建变量，AES-256-GCM 密文，接口只返回掩码 |
+| `repo_credential.token_cipher` | 数据库 | 仓库访问 token，AES-256-GCM 密文，绑定后 cloneUrl 只保留干净地址 |
 
 - 仓库密码使用 BCrypt 存储，登录失败不区分「用户不存在」和「密码错误」。
-- Webhook 校验 `X-Gitea-Signature`（HMAC-SHA256，原始请求体），签名不对不进入业务逻辑。
+- Webhook 校验 Gitea `X-Gitea-Signature` 或 GitHub `X-Hub-Signature-256`（HMAC-SHA256，原始请求体），签名不对不进入业务逻辑。
 - 内部接口 `/api/internal/**` 必须带 `X-Internal-Token`，token 错误直接 401。
+- 构建上下文中的仓库 token 与 secrets 只经内部接口下发给 worker；日志 sink 会把 URL userinfo 与已知密钥值替换为掩码。
+- Docker 执行器通过 `docker run -e` 注入变量，宿主机 `ps` 仍可能看到参数；更严格的环境应使用 K8s 执行器或后续接入 Docker secret。
 
 ## 三、网络隔离
 
@@ -66,3 +71,5 @@ worker   ──── 构建节点 Docker / K8s 集群
 - 未做服务端令牌吊销，登出仅清前端；缩短 `platform.jwt.expire-minutes` 可降低风险。
 - 未内置审计日志表，敏感操作审计需在网关层或数据库层补充。
 - 未做多租户硬隔离，跨项目访问控制依赖成员表与后续增强。
+- Jenkins 执行器尚未注入平台 secrets；Docker 的 `-e` 与 git clone URL 中的 token 在宿主机进程参数中可见。
+- `PLATFORM_CRYPTO_KEY` 丢失会导致已有密文无法解密，需与数据库一并备份。

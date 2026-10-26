@@ -29,6 +29,8 @@ export default function ReposPage() {
     defaultBranch: 'main',
     privateRepo: true,
     webhookSecret: '',
+    username: '',
+    token: '',
   });
 
   const webhookUrl = useMemo(() => `${API_BASE}/api/webhooks/gitea`, []);
@@ -102,11 +104,15 @@ export default function ReposPage() {
               cloneUrl: form.cloneUrl.trim(),
               defaultBranch: form.defaultBranch,
               webhookSecret: form.webhookSecret || null,
+              username: form.username.trim() || null,
+              token: form.token.trim() || null,
             };
       const result = await api.post<RepoCreated>(mode === 'gitea' ? '/repos' : '/repos/bind', body);
       setCreated(result);
       setShowForm(false);
-      setForm((prev) => ({ ...prev, name: '', description: '', cloneUrl: '', webhookSecret: '' }));
+      setForm((prev) => ({
+        ...prev, name: '', description: '', cloneUrl: '', webhookSecret: '', username: '', token: '',
+      }));
       setPage(1);
       await load();
     } catch (err) {
@@ -233,6 +239,27 @@ export default function ReposPage() {
                 />
               </label>
             )}
+            {mode === 'bind' && (
+              <>
+                <label className="field">
+                  <span>访问用户名（私有仓库）</span>
+                  <input
+                    value={form.username}
+                    placeholder="github 用户或 git"
+                    onChange={(e) => setForm({ ...form, username: e.target.value })}
+                  />
+                </label>
+                <label className="field">
+                  <span>访问令牌（私有仓库）</span>
+                  <input
+                    type="password"
+                    value={form.token}
+                    placeholder="PAT / Gitea Token，加密存储"
+                    onChange={(e) => setForm({ ...form, token: e.target.value })}
+                  />
+                </label>
+              </>
+            )}
             <label className="field">
               <span>Webhook Secret（留空自动生成）</span>
               <input
@@ -305,6 +332,7 @@ export default function ReposPage() {
                 <th>Clone URL</th>
                 <th>默认分支</th>
                 <th>Webhook</th>
+                <th>访问凭据</th>
                 <th />
               </tr>
             </thead>
@@ -324,6 +352,11 @@ export default function ReposPage() {
                     </span>
                   </td>
                   <td>
+                    <span className={`badge ${repo.credentialConfigured ? 'green' : 'gray'}`}>
+                      {repo.credentialConfigured ? '已配置' : '未配置'}
+                    </span>
+                  </td>
+                  <td>
                     {isAdmin(user) && (
                       <button
                         type="button"
@@ -338,7 +371,7 @@ export default function ReposPage() {
               ))}
               {(repos?.items.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={7} className="empty">
+                  <td colSpan={8} className="empty">
                     暂无仓库
                   </td>
                 </tr>

@@ -6,6 +6,8 @@ import com.snail.platform.control.dto.MonorepoPipelineRequest;
 import com.snail.platform.control.dto.PipelineRequest;
 import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.PipelineTemplateView;
+import com.snail.platform.control.dto.PipelineYamlRequest;
+import com.snail.platform.control.dto.PipelineYamlView;
 import com.snail.platform.control.dto.RunView;
 import com.snail.platform.control.dto.TriggerRequest;
 import com.snail.platform.control.entity.PipelineEntity;
@@ -116,5 +118,27 @@ public class PipelineController {
     public ApiResult<List<RunView>> runs(@PathVariable Long id,
                                          @RequestParam(defaultValue = "50") int limit) {
         return ApiResult.ok(runService.list(id, limit));
+    }
+
+    /** 导出步骤定义为 YAML（用于提交到仓库做配置即代码）。 */
+    @GetMapping("/{id}/yaml")
+    public ApiResult<PipelineYamlView> yaml(@PathVariable Long id) {
+        return ApiResult.ok(pipelineService.yaml(id));
+    }
+
+    /** 导入 YAML：解析并校验后覆盖平台内步骤定义。 */
+    @PutMapping("/{id}/yaml")
+    @PreAuthorize("hasAnyRole('ADMIN','DEVELOPER')")
+    public ApiResult<PipelineYamlView> saveYaml(@PathVariable Long id,
+                                                @RequestBody PipelineYamlRequest request) {
+        return ApiResult.ok(pipelineService.saveYaml(id, request.yaml()));
+    }
+
+    /** 从仓库读取 configPath 指向的 YAML，校验后回写为预览定义。 */
+    @PostMapping("/{id}/yaml/sync")
+    @PreAuthorize("hasAnyRole('ADMIN','DEVELOPER')")
+    public ApiResult<PipelineYamlView> syncYaml(@PathVariable Long id,
+                                                @RequestParam(required = false) String ref) {
+        return ApiResult.ok(pipelineService.syncYaml(id, ref));
     }
 }

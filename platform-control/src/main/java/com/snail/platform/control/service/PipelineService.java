@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.snail.platform.common.api.BizException;
 import com.snail.platform.common.build.BuildMessage;
-import com.snail.platform.common.build.BuildStep;
 import com.snail.platform.common.build.PipelineDefinition;
 import com.snail.platform.common.model.ExecutorType;
 import com.snail.platform.common.model.PipelineSide;
@@ -14,6 +13,7 @@ import com.snail.platform.control.dto.MonorepoPipelineRequest;
 import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.PipelineRequest;
 import com.snail.platform.control.dto.PipelineTemplateView;
+import com.snail.platform.control.dto.PipelineYamlView;
 import com.snail.platform.control.entity.PipelineEntity;
 import com.snail.platform.control.entity.PipelineRunEntity;
 import com.snail.platform.control.entity.ProjectBranchEntity;
@@ -45,11 +45,16 @@ public class PipelineService {
     private final ProjectService projectService;
     private final ProjectBranchService projectBranchService;
     private final PipelineTemplateService pipelineTemplateService;
+    private final PipelineConfigService pipelineConfigService;
     private final BuildMessagePublisher messagePublisher;
     private final ObjectMapper objectMapper;
 
     @Value("${platform.executor.default:DOCKER}")
     private String defaultExecutor;
+
+    /** 同一流水线允许排队的任务上限，避免重复触发堆积。 */
+    @Value("${platform.build.max-queued-per-pipeline:3}")
+    private int maxQueuedPerPipeline;
 
     public List<PipelineEntity> list(Long projectId) {
         LambdaQueryWrapper<PipelineEntity> wrapper = new LambdaQueryWrapper<PipelineEntity>()
@@ -188,7 +193,7 @@ public class PipelineService {
                 continue;
             }
             created.add(create(new PipelineRequest(request.projectId(), repo.getId(), view.name(), branch,
-                    triggerType, view.executorType(), view.side(), view.definitionJson(), true)));
+                    triggerType, view.executorType(), view.side(), view.definitionJson(), true, null)));
         }
         return created;
     }
@@ -212,9 +217,43 @@ public class PipelineService {
         pipelineMapper.deleteById(id);
     }
 
+    /** 导出当前步骤定义为 YAML。 */
+    public PipelineYamlView yaml(Long id) {
+        PipelineEntity pipeline = get(id);
+        PipelineDefinition definition = pipelineConfigService.readJson(pipeline.getDefinitionJson());
+        return new PipelineYamlView(pipelineConfigService.toYaml(definition),
+                pipelineConfigService.writeJson(definition), pipeline.getConfigPath(), "平台定义");
+    }
+
+    /** 导入 YAML：解析校验后覆盖平台内步骤定义（configPath 非空时仍以仓库配置优先）。 */
+    public PipelineYamlView saveYaml(Long id, String yaml) {
+        PipelineEntity pipeline = get(id);
+        PipelineDefinition definition = pipelineConfigService.parseYaml(yaml);
+        pipeline.setDefinitionJson(pipelineConfigService.writeJson(definition));
+        pipeline.setUpdatedAt(LocalDateTime.now());
+        pipelineMapper.updateById(pipeline);
+        return new PipelineYamlView(yaml, pipeline.getDefinitionJson(), pipeline.getConfigPath(), "平台定义");
+    }
+
+    /** 从仓库读取 YAML（ref 为空用流水线分支），校验通过后写入本地定义作为预览。 */
+    public PipelineYamlView syncYaml(Long id, String ref) {
+        PipelineEntity pipeline = get(id);
+        if (!StringUtils.hasText(pipeline.getConfigPath())) {
+            throw BizException.badRequest("该流水线未配置仓库内配置路径，请先保存配置路径再同步");
+        }
+        String targetRef = StringUtils.hasText(ref) ? ref.trim() : pipeline.getBranch();
+        PipelineConfigService.Resolved resolved = pipelineConfigService.resolve(pipeline, targetRef, null);
+        pipeline.setDefinitionJson(resolved.json());
+        pipeline.setUpdatedAt(LocalDateTime.now());
+        pipelineMapper.updateById(pipeline);
+        return new PipelineYamlView(pipelineConfigService.toYaml(resolved.definition()),
+                resolved.json(), pipeline.getConfigPath(), resolved.source());
+    }
+
     /**
-     * 触发一次构建：先落 run（QUEUED），再投递 MQ。
-     * 投递失败会把 run 标记为 FAILED，避免出现永远 QUEUED 的幽灵任务。
+     * 触发一次构建：先校验配置与排队上限，再落 run（QUEUED），最后投递 MQ。
+     * 触发前解析一次定义（配置在仓库时会读取远端 YAML），解析结果写入 run 快照，
+     * worker 只按快照执行，避免构建期间配置被改动。
      */
     public PipelineRunEntity trigger(Long pipelineId, TriggerType triggerType, String branch,
                                      String commitSha, String triggeredBy) {
@@ -226,13 +265,24 @@ public class PipelineService {
         if (repo == null || !StringUtils.hasText(repo.getCloneUrl())) {
             throw BizException.badRequest("流水线未绑定可用仓库（cloneUrl 为空）");
         }
+        String targetBranch = StringUtils.hasText(branch) ? branch : pipeline.getBranch();
+        Long queued = pipelineRunMapper.selectCount(new LambdaQueryWrapper<PipelineRunEntity>()
+                .eq(PipelineRunEntity::getPipelineId, pipelineId)
+                .eq(PipelineRunEntity::getStatus, RunStatus.QUEUED.name()));
+        if (queued != null && queued >= maxQueuedPerPipeline) {
+            throw BizException.conflict("该流水线排队任务已达上限 " + maxQueuedPerPipeline
+                    + "，请等待执行完成或取消排队任务");
+        }
+        PipelineConfigService.Resolved resolved =
+                pipelineConfigService.resolve(pipeline, targetBranch, commitSha);
 
         PipelineRunEntity run = new PipelineRunEntity();
         run.setPipelineId(pipelineId);
         run.setBuildNo(nextBuildNo(pipelineId));
         run.setStatus(RunStatus.QUEUED.name());
-        run.setBranch(StringUtils.hasText(branch) ? branch : pipeline.getBranch());
+        run.setBranch(targetBranch);
         run.setCommitSha(commitSha);
+        run.setResolvedDefinition(resolved.json());
         run.setTriggerType(triggerType.name());
         run.setTriggeredBy(triggeredBy);
         run.setCreatedAt(LocalDateTime.now());
@@ -251,15 +301,30 @@ public class PipelineService {
     }
 
     /** Webhook push 事件：命中同仓库、同分支（支持 *）、启用且触发方式为 WEBHOOK 的流水线。 */
-    public List<Long> triggerWebhook(RepoEntity repo, String branch, String commitSha) {
+    public List<Long> triggerWebhook(RepoEntity repo, String branch, String commitSha, String triggeredBy) {
         List<PipelineEntity> pipelines = pipelineMapper.selectList(new LambdaQueryWrapper<PipelineEntity>()
                 .eq(PipelineEntity::getRepoId, repo.getId())
                 .eq(PipelineEntity::getEnabled, true)
                 .eq(PipelineEntity::getTriggerType, TriggerType.WEBHOOK.name()));
         return pipelines.stream()
                 .filter(p -> "*".equals(p.getBranch()) || p.getBranch().equals(branch))
-                .map(p -> trigger(p.getId(), TriggerType.WEBHOOK, branch, commitSha, "gitea-webhook").getId())
+                .filter(p -> !alreadyBuilt(p.getId(), branch, commitSha))
+                .map(p -> trigger(p.getId(), TriggerType.WEBHOOK, branch, commitSha, triggeredBy).getId())
                 .toList();
+    }
+
+    /** 同一提交已排队/执行/成功时跳过，避免 webhook 重投或重复推送导致重复构建。 */
+    private boolean alreadyBuilt(Long pipelineId, String branch, String commitSha) {
+        if (!StringUtils.hasText(commitSha)) {
+            return false;
+        }
+        Long exists = pipelineRunMapper.selectCount(new LambdaQueryWrapper<PipelineRunEntity>()
+                .eq(PipelineRunEntity::getPipelineId, pipelineId)
+                .eq(PipelineRunEntity::getBranch, branch)
+                .eq(PipelineRunEntity::getCommitSha, commitSha)
+                .in(PipelineRunEntity::getStatus, List.of(RunStatus.QUEUED.name(),
+                        RunStatus.RUNNING.name(), RunStatus.SUCCESS.name())));
+        return exists != null && exists > 0;
     }
 
     private int nextBuildNo(Long pipelineId) {
@@ -281,6 +346,7 @@ public class PipelineService {
         pipeline.setExecutorType(parseEnum(ExecutorType.class, executor, "执行器类型").name());
         pipeline.setSide(resolveSide(request));
         pipeline.setDefinitionJson(write(definition));
+        pipeline.setConfigPath(pipelineConfigService.normalizeConfigPath(request.configPath()));
         pipeline.setEnabled(request.enabled() == null || request.enabled());
     }
 
@@ -289,7 +355,7 @@ public class PipelineService {
         if (StringUtils.hasText(request.side())) {
             return parseEnum(PipelineSide.class, request.side(), "所属端").name();
         }
-        String json = request.definitionJson().toLowerCase(Locale.ROOT);
+        String json = request.definitionJson() == null ? "" : request.definitionJson().toLowerCase(Locale.ROOT);
         boolean frontend = json.contains("node:") || json.contains("npm ")
                 || json.contains("yarn ") || json.contains("pnpm ") || json.contains("vite");
         return frontend ? PipelineSide.FRONTEND.name() : PipelineSide.BACKEND.name();
@@ -312,34 +378,21 @@ public class PipelineService {
         parseEnum(TriggerType.class, request.triggerType(), "触发方式");
         parseEnum(ExecutorType.class, request.executorType() == null ? defaultExecutor : request.executorType(),
                 "执行器类型");
+        String configPath = pipelineConfigService.normalizeConfigPath(request.configPath());
+        if (!StringUtils.hasText(request.definitionJson()) && configPath == null) {
+            throw BizException.badRequest("请提供流水线步骤定义，或填写仓库内配置路径（如 .snail/pipeline.yml）");
+        }
+        if (!StringUtils.hasText(request.definitionJson())) {
+            // 配置在仓库：步骤在触发时读取并校验，这里先允许空定义。
+            return new PipelineDefinition();
+        }
         PipelineDefinition definition;
         try {
             definition = objectMapper.readValue(request.definitionJson(), PipelineDefinition.class);
         } catch (JsonProcessingException ex) {
             throw BizException.badRequest("流水线定义不是合法 JSON: " + ex.getOriginalMessage());
         }
-        if (definition.getSteps() == null || definition.getSteps().isEmpty()) {
-            throw BizException.badRequest("流水线至少需要一个 step");
-        }
-        for (int i = 0; i < definition.getSteps().size(); i++) {
-            BuildStep step = definition.getSteps().get(i);
-            if (!StringUtils.hasText(step.getImage())) {
-                throw BizException.badRequest("第 " + (i + 1) + " 个 step 缺少 image");
-            }
-            if (step.getCommands() == null || step.getCommands().isEmpty()) {
-                throw BizException.badRequest("第 " + (i + 1) + " 个 step 缺少 commands");
-            }
-            if (!StringUtils.hasText(step.getName())) {
-                step.setName("step-" + (i + 1));
-            }
-            if (!StringUtils.hasText(step.getWorkDir())) {
-                step.setWorkDir("/workspace");
-            }
-            if (step.getArtifacts() == null) {
-                step.setArtifacts(List.of());
-            }
-        }
-        return definition;
+        return pipelineConfigService.normalize(definition);
     }
 
     private String write(PipelineDefinition definition) {

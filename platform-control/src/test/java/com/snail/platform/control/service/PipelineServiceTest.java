@@ -2,6 +2,7 @@ package com.snail.platform.control.service;
 
 import com.snail.platform.common.api.BizException;
 import com.snail.platform.common.build.BuildMessage;
+import com.snail.platform.common.build.PipelineDefinition;
 import com.snail.platform.common.model.TriggerType;
 import com.snail.platform.control.entity.PipelineEntity;
 import com.snail.platform.control.entity.PipelineRunEntity;
@@ -26,6 +27,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -47,6 +49,8 @@ class PipelineServiceTest {
     @Mock
     private PipelineTemplateService pipelineTemplateService;
     @Mock
+    private PipelineConfigService pipelineConfigService;
+    @Mock
     private BuildMessagePublisher publisher;
 
     private PipelineService service;
@@ -54,8 +58,13 @@ class PipelineServiceTest {
     @BeforeEach
     void setUp() {
         service = new PipelineService(pipelineMapper, runMapper, repoMapper, projectService,
-                projectBranchService, pipelineTemplateService, publisher, new ObjectMapper());
+                projectBranchService, pipelineTemplateService, pipelineConfigService, publisher,
+                new ObjectMapper());
         ReflectionTestUtils.setField(service, "defaultExecutor", "DOCKER");
+        ReflectionTestUtils.setField(service, "maxQueuedPerPipeline", 3);
+        lenient().when(pipelineConfigService.resolve(any(), any(), any()))
+                .thenReturn(new PipelineConfigService.Resolved(new PipelineDefinition(),
+                        "{\"steps\":[]}", "平台定义"));
     }
 
     @Test
@@ -121,6 +130,19 @@ class PipelineServiceTest {
     }
 
     @Test
+    void triggerRejectsWhenQueueLimitReached() {
+        when(pipelineMapper.selectById(10L)).thenReturn(pipeline(10L, true, 5L, "main", "MANUAL"));
+        when(repoMapper.selectById(5L)).thenReturn(repo(5L));
+        when(runMapper.selectCount(any())).thenReturn(3L);
+
+        assertThatThrownBy(() -> service.trigger(10L, TriggerType.MANUAL, null, null, "admin"))
+                .isInstanceOf(BizException.class)
+                .hasMessageContaining("排队任务已达上限");
+        verify(runMapper, never()).insert(any(PipelineRunEntity.class));
+        verify(publisher, never()).publish(any());
+    }
+
+    @Test
     void triggerMarksRunFailedWhenPublishFails() {
         when(pipelineMapper.selectById(10L)).thenReturn(pipeline(10L, true, 5L, "main", "MANUAL"));
         when(repoMapper.selectById(5L)).thenReturn(repo(5L));
@@ -160,7 +182,7 @@ class PipelineServiceTest {
             return 1;
         });
 
-        List<Long> runIds = service.triggerWebhook(repo, "dev", "abcdef");
+        List<Long> runIds = service.triggerWebhook(repo, "dev", "abcdef", "gitea-webhook");
 
         assertThat(runIds).containsExactly(200L, 201L);
         verify(publisher, times(2)).publish(any());
@@ -172,9 +194,23 @@ class PipelineServiceTest {
         PipelineEntity release = pipeline(3L, true, 5L, "release", "WEBHOOK");
         when(pipelineMapper.selectList(any())).thenReturn(List.of(release));
 
-        List<Long> runIds = service.triggerWebhook(repo, "dev", "abcdef");
+        List<Long> runIds = service.triggerWebhook(repo, "dev", "abcdef", "gitea-webhook");
 
         assertThat(runIds).isEmpty();
+        verify(publisher, never()).publish(any());
+    }
+
+    @Test
+    void webhookSkipsCommitAlreadyQueuedOrBuilt() {
+        RepoEntity repo = repo(5L);
+        PipelineEntity dev = pipeline(2L, true, 5L, "dev", "WEBHOOK");
+        when(pipelineMapper.selectList(any())).thenReturn(List.of(dev));
+        when(runMapper.selectCount(any())).thenReturn(1L);
+
+        List<Long> runIds = service.triggerWebhook(repo, "dev", "abcdef", "github-webhook");
+
+        assertThat(runIds).isEmpty();
+        verify(runMapper, never()).insert(any(PipelineRunEntity.class));
         verify(publisher, never()).publish(any());
     }
 

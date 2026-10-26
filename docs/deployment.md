@@ -31,7 +31,9 @@ Docker 执行器通过 `docker run -v <宿主机路径>:/workspace` 挂载源码
 | `MINIO_ENDPOINT` / `ACCESS_KEY` / `SECRET_KEY` / `BUCKET` | http://localhost:9000 / platform / platform123 / platform-artifacts | 制品 |
 | `GITEA_URL` / `GITEA_TOKEN` | 空 | 代码托管；为空时只能手工绑定仓库 |
 | `JWT_SECRET` | dev 值 | 生产必须替换，至少 32 字节 |
+| `PLATFORM_CRYPTO_KEY` | 空 | 构建变量 / 仓库 token 的 AES-256-GCM 密钥；为空时由 `JWT_SECRET` 派生，生产必须显式配置并备份 |
 | `INTERNAL_TOKEN` | dev-internal-token | control 与 worker 的内部调用令牌 |
+| `MAX_QUEUED_PER_PIPELINE` | 3 | 同一流水线允许排队的运行上限，超过后触发返回 409 |
 | `EXECUTOR_DEFAULT` | DOCKER | 未声明执行器时的回退值 |
 | `EXECUTOR_TIMEOUT_SECONDS` | 1800 | 单个步骤/整个远端构建的超时 |
 | `K8S_KUBECONFIG` / `K8S_NAMESPACE` | 空 / platform | K8s 执行器与发布；发布优先用环境配置的 namespace，为空时才回退到 `K8S_NAMESPACE` |
@@ -120,3 +122,8 @@ location / {
   - 建 `project_branch` / `project_environment`，并按现有流水线的分支回填分支归属；
   - 为每个项目补齐 `DEV` / `TEST` / `PROD` 三套环境；
   - 给 `deployment` 增加 `namespace`，并按 `environment` 回填历史发布单的 namespace。
+- 从旧版本升级到含 `V4__pipeline_yaml_secrets.sql` 的版本时：
+  - `pipeline` 增加 `config_path`（默认空，仍使用平台定义）；
+  - `pipeline_run` 增加 `resolved_definition` 快照；
+  - 新建 `project_secret` 与 `repo_credential`，历史 cloneUrl 中如带 token 不会被自动拆分，建议重新绑定或补录凭据；
+  - 配置 `PLATFORM_CRYPTO_KEY` 后再录入 secrets，避免后续更换密钥导致旧密文不可读。

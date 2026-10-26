@@ -8,6 +8,8 @@ import com.snail.platform.common.model.RunStatus;
 import com.snail.platform.worker.build.ArtifactCollector;
 import com.snail.platform.worker.build.BuildContext;
 import com.snail.platform.worker.build.FileLogSink;
+import com.snail.platform.worker.build.LogSink;
+import com.snail.platform.worker.build.MaskingLogSink;
 import com.snail.platform.worker.client.ControlClient;
 import com.snail.platform.worker.executor.BuildExecutor;
 import com.snail.platform.worker.executor.ExecutorResolver;
@@ -62,6 +64,9 @@ public class BuildService {
                 .pipelineId(remote.pipelineId())
                 .projectKey(remote.projectKey())
                 .repoUrl(remote.repoUrl())
+                .repoUsername(remote.repoUsername())
+                .repoToken(remote.repoToken())
+                .secrets(remote.secrets() == null ? java.util.Map.of() : remote.secrets())
                 .branch(remote.branch())
                 .commitSha(remote.commitSha())
                 .rootDir(root)
@@ -70,7 +75,8 @@ public class BuildService {
                 .steps(remote.steps())
                 .build();
 
-        try (FileLogSink sink = new FileLogSink(logFile)) {
+        try (FileLogSink fileSink = new FileLogSink(logFile)) {
+            LogSink sink = new MaskingLogSink(fileSink, remote.repoToken(), context.getSecrets());
             sink.line("===== 构建开始 =====");
             sink.line("runId=" + runId + ", pipelineId=" + remote.pipelineId()
                     + ", project=" + remote.projectKey() + ", branch=" + remote.branch());
@@ -78,6 +84,9 @@ public class BuildService {
             try {
                 BuildExecutor executor = executorResolver.resolve(remote.executorType());
                 sink.line("执行器: " + executor.type());
+                if (!context.getSecrets().isEmpty()) {
+                    sink.line("[env] 已注入 " + context.getSecrets().size() + " 个项目构建变量");
+                }
                 executor.execute(context, sink);
                 artifactCollector.collect(remote.steps(), sourceDir, artifactDir, sink);
                 uploadArtifacts(runId, artifactDir, sink);
@@ -110,7 +119,7 @@ public class BuildService {
         cleanup(root);
     }
 
-    private void uploadArtifacts(Long runId, Path artifactDir, FileLogSink sink) throws Exception {
+    private void uploadArtifacts(Long runId, Path artifactDir, LogSink sink) throws Exception {
         if (!Files.isDirectory(artifactDir)) {
             return;
         }

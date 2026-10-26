@@ -51,6 +51,29 @@
 }
 ```
 
+## YAML 与配置即代码
+
+流水线在平台内仍保存为 JSON，但编辑页支持直接编辑 YAML（`GET/PUT /api/pipelines/{id}/yaml`）。同一份结构可以放在仓库中，由流水线的 `config_path` 指定：
+
+```yaml
+steps:
+  - name: 编译
+    image: maven:3.9-eclipse-temurin-21
+    commands:
+      - mvn -B -ntp -DskipTests package
+    workDir: /workspace
+    artifacts:
+      - target/*.jar
+```
+
+规则：
+
+- `config_path` 为空：使用平台内 JSON 定义。
+- `config_path` 非空：触发时读取该仓库目标分支（有 commitSha 时用 commitSha）的 YAML，校验后写入 `pipeline_run.resolved_definition` 快照，worker 只执行快照。
+- 读取失败、YAML 语法错误、缺少 `image` / `commands` 都会在触发前返回 4xx，不会创建运行记录。
+- 平台内 JSON 仍保留作预览；只有执行「导入 YAML」才会覆盖平台定义，且不会清空 `config_path`。
+- GitHub 私有仓库或高频读取需要为仓库配置访问凭据（PAT）；Gitea 使用 `repo_credential` 中的 token。
+
 ## 执行语义
 
 - **Docker**：源码 clone 到宿主机工作目录，每个 step 单独 `docker run --rm -v <source>:<workDir>`。step 之间共享同一份源码，因此可以前一步装依赖、后一步打包。
@@ -60,6 +83,8 @@
 ## 注意事项
 
 - 不要在 `commands` 里写交互式命令，容器没有 TTY。
-- 构建环境变量由镜像决定，平台不注入业务密钥；需要私有仓库凭据时，请在构建节点预置 git credential 或使用带凭据的镜像。
+- 构建环境变量 = 镜像自带环境 + 项目「构建变量」（secrets）注入。Docker 以 `-e NAME=value` 传入，K8s 写入容器 env；Jenkins 执行器当前未注入平台 secrets。
+- 日志会脱敏：URL 中的 userinfo 与已知 token / secret 值会替换为掩码，但仓库命令自行打印的其他敏感信息仍需自行规避。
 - `artifacts` 使用 JDK `PathMatcher` 的 glob 语法，`**` 表示任意层级。
 - 每次运行工作目录为 `<WORKSPACE_DIR>/run-<runId>`，结束后自动清理。
+- 同一流水线同时只允许有限排队（默认 3 个 QUEUED），Webhook 对同 commit 的重复推送会跳过。

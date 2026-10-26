@@ -22,6 +22,8 @@ public class PipelineEntity {
     private String executorType;
     private String side;
     private String definitionJson;
+    /** 仓库内 YAML 配置路径（如 .snail/pipeline.yml）；非空时构建以该文件为准。 */
+    private String configPath;
     private Boolean enabled;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

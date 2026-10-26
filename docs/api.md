@@ -30,8 +30,20 @@
 | --- | --- | --- | --- |
 | GET | `/api/repos?projectId=1` | 登录 | 仓库列表 |
 | POST | `/api/repos` | ADMIN/DEVELOPER | 在 Gitea 创建仓库：`{"projectId":1,"name":"demo","description":"","privateRepo":true,"defaultBranch":"main","webhookSecret":""}` |
-| POST | `/api/repos/bind` | ADMIN/DEVELOPER | 绑定已有仓库：`{"projectId":1,"name":"demo","cloneUrl":"https://...","defaultBranch":"main","webhookSecret":"..."}` |
+| POST | `/api/repos/bind` | ADMIN/DEVELOPER | 绑定已有仓库：`{"projectId":1,"name":"demo","cloneUrl":"https://github.com/o/r.git","defaultBranch":"main","webhookSecret":"...","username":"o","token":"PAT"}`；token 可省略 |
+| PUT | `/api/repos/{id}/credential` | ADMIN/DEVELOPER | 设置访问凭据：`{"username":"o","token":"PAT"}`，token 加密存储 |
+| DELETE | `/api/repos/{id}/credential` | ADMIN/DEVELOPER | 删除访问凭据 |
+| GET | `/api/repos/{id}/webhook-secret` | ADMIN | 查看仓库 webhook secret（用于 Gitea / GitHub 配置） |
 | DELETE | `/api/repos/{id}` | ADMIN | 解除绑定（不删除远端仓库） |
+
+## 项目构建变量（secrets）
+
+| 方法 | 路径 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/secrets?projectId=1` | 登录 | 变量列表，`value` 只返回 `****1234` 掩码 |
+| POST | `/api/secrets` | ADMIN/DEVELOPER | 新增：`{"projectId":1,"name":"NPM_TOKEN","value":"...","description":""}` |
+| PUT | `/api/secrets/{id}` | ADMIN/DEVELOPER | 修改；`value` 留空表示不修改 |
+| DELETE | `/api/secrets/{id}` | ADMIN | 删除 |
 
 ## 流水线
 
@@ -42,8 +54,11 @@
 | POST | `/api/pipelines` | ADMIN/DEVELOPER | 创建，字段见下 |
 | PUT | `/api/pipelines/{id}` | ADMIN/DEVELOPER | 修改（不允许移动项目） |
 | DELETE | `/api/pipelines/{id}` | ADMIN | 删除 |
-| POST | `/api/pipelines/{id}/trigger` | ADMIN/DEVELOPER | 手动触发，body `{"branch":"main","commitSha":null}` 可省略 |
+| POST | `/api/pipelines/{id}/trigger` | ADMIN/DEVELOPER | 手动触发，body `{"branch":"main","commitSha":null}` 可省略；排队数达上限返回 409 |
 | GET | `/api/pipelines/{id}/runs` | 登录 | 该流水线的运行记录 |
+| GET | `/api/pipelines/{id}/yaml` | 登录 | 导出当前定义为 YAML，返回 `yaml / definitionJson / configPath / source` |
+| PUT | `/api/pipelines/{id}/yaml` | ADMIN/DEVELOPER | 导入 YAML，body `{"yaml":"steps: ..."}`，校验后覆盖平台定义 |
+| POST | `/api/pipelines/{id}/yaml/sync?ref=main` | ADMIN/DEVELOPER | 从仓库 `configPath` 读取 YAML 并写回平台定义；`ref` 省略用流水线分支 |
 
 创建/修改请求体：
 
@@ -56,9 +71,12 @@
   "triggerType": "MANUAL",
   "executorType": "DOCKER",
   "definitionJson": "{\"steps\":[{\"name\":\"编译\",\"image\":\"maven:3.9-eclipse-temurin-17\",\"commands\":[\"mvn -B -ntp -DskipTests package\"],\"artifacts\":[\"target/*.jar\"]}]}",
+  "configPath": ".snail/pipeline.yml",
   "enabled": true
 }
 ```
+
+`configPath` 为空时 `definitionJson` 必填；非空时允许 `definitionJson` 为空，触发时以仓库 YAML 为准。
 
 `triggerType`：`MANUAL` / `WEBHOOK`；`executorType`：`DOCKER` / `K8S` / `JENKINS`。
 
@@ -118,6 +136,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | POST | `/api/webhooks/gitea` | Gitea push 事件。校验 `X-Gitea-Signature`（HMAC-SHA256），按仓库 secret 匹配后触发启用的 `WEBHOOK` 流水线 |
+| POST | `/api/webhooks/github` | GitHub push 事件。校验 `X-Hub-Signature-256`（HMAC-SHA256），`X-GitHub-Event: ping` 直接返回空列表，仅处理 `push` |
 
 ## 内部接口（worker → control）
 
@@ -125,7 +144,7 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| GET | `/api/internal/runs/{id}/context` | 获取仓库地址、分支、commit、steps、executorType、projectKey |
+| GET | `/api/internal/runs/{id}/context` | 获取仓库地址、分支、commit、steps（优先使用 run 快照）、executorType、projectKey、仓库凭据与项目 secrets |
 | POST | `/api/internal/runs/{id}/status` | `{"status":"RUNNING|SUCCESS|FAILED|CANCELED","errorMessage":null,"logObject":"runs/1/build.log"}` |
 | POST | `/api/internal/runs/{id}/artifacts` | 登记制品：文件名、对象键、大小、SHA-256、contentType |
 

@@ -120,6 +120,8 @@ services:
       MINIO_BUCKET: ${MINIO_BUCKET:-platform-artifacts}
       JWT_SECRET: ${JWT_SECRET:-dev-only-jwt-secret-please-change-0123456789abcdef}
       INTERNAL_TOKEN: ${INTERNAL_TOKEN:-dev-internal-token}
+      PLATFORM_CRYPTO_KEY: ${PLATFORM_CRYPTO_KEY:-}
+      MAX_QUEUED_PER_PIPELINE: ${MAX_QUEUED_PER_PIPELINE:-3}
       GITEA_URL: ${GITEA_URL:-http://gitea:3000}
       GITEA_TOKEN: ${GITEA_TOKEN:-}
       K8S_KUBECONFIG: ${K8S_KUBECONFIG:-}

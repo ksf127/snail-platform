@@ -2,6 +2,7 @@ package com.snail.platform.control.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.snail.platform.common.api.BizException;
+import com.snail.platform.common.build.RepoUrls;
 import com.snail.platform.common.model.RepoProvider;
 import com.snail.platform.control.dto.BindRepoRequest;
 import com.snail.platform.control.dto.CreateRepoRequest;
@@ -27,6 +28,7 @@ public class RepoService {
     private final RepoMapper repoMapper;
     private final ProjectService projectService;
     private final GiteaClient giteaClient;
+    private final RepoCredentialService repoCredentialService;
 
     public List<RepoView> list(Long projectId) {
         LambdaQueryWrapper<RepoEntity> wrapper = new LambdaQueryWrapper<RepoEntity>()
@@ -87,17 +89,45 @@ public class RepoService {
     /** 不依赖 Gitea 的手工绑定（GENERIC），保证 MVP 在无 Gitea 环境可运行。 */
     public RepoCreatedView bindGeneric(BindRepoRequest request) {
         projectService.get(request.projectId());
+        // 兼容把 token 写在 cloneUrl 里的历史用法：拆出凭据单独加密保存，库里只留干净地址。
+        RepoUrls.Parsed parsed = RepoUrls.parse(request.cloneUrl());
         RepoEntity repo = new RepoEntity();
         repo.setProjectId(request.projectId());
         repo.setName(request.name());
         repo.setProvider(RepoProvider.GENERIC.name());
         repo.setExternalId(null);
-        repo.setCloneUrl(request.cloneUrl());
+        repo.setCloneUrl(parsed.url());
         repo.setDefaultBranch(StringUtils.hasText(request.defaultBranch()) ? request.defaultBranch() : "main");
         repo.setWebhookSecret(secret(request.webhookSecret()));
         repo.setCreatedAt(LocalDateTime.now());
         repoMapper.insert(repo);
+        if (StringUtils.hasText(parsed.password())) {
+            repoCredentialService.save(repo.getId(), parsed.username(), parsed.password());
+        } else if (StringUtils.hasText(request.token())) {
+            repoCredentialService.save(repo.getId(), request.username(), request.token());
+        }
         return new RepoCreatedView(repo, repo.getWebhookSecret());
+    }
+
+    /** 保存/覆盖仓库访问凭据，返回仓库视图（不含 token）。 */
+    public RepoView saveCredential(Long repoId, String username, String token) {
+        RepoEntity repo = get(repoId);
+        repoCredentialService.save(repoId, username, token);
+        return toView(repo);
+    }
+
+    public void deleteCredential(Long repoId) {
+        get(repoId);
+        repoCredentialService.delete(repoId);
+    }
+
+    /** Webhook 无法根据 secret 反查时使用：列出全部仓库逐一验签。 */
+    public List<RepoEntity> listAll() {
+        return repoMapper.selectList(new LambdaQueryWrapper<RepoEntity>().orderByAsc(RepoEntity::getId));
+    }
+
+    public String webhookSecret(Long repoId) {
+        return get(repoId).getWebhookSecret();
     }
 
     public void delete(Long id) {
@@ -127,8 +157,8 @@ public class RepoService {
 
     private RepoView toView(RepoEntity repo) {
         return new RepoView(repo.getId(), repo.getProjectId(), repo.getName(), repo.getProvider(),
-                repo.getExternalId(), repo.getCloneUrl(), repo.getDefaultBranch(),
-                StringUtils.hasText(repo.getWebhookSecret()));
+                repo.getExternalId(), RepoUrls.mask(repo.getCloneUrl()), repo.getDefaultBranch(),
+                StringUtils.hasText(repo.getWebhookSecret()), repoCredentialService.exists(repo.getId()));
     }
 
     private String secret(String requested) {

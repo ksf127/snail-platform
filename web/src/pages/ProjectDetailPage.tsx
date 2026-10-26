@@ -5,6 +5,7 @@ import { canWrite, useAuth } from '../auth-context';
 import Pagination from '../components/Pagination';
 import ProjectBranchesPanel from '../components/ProjectBranchesPanel';
 import ProjectEnvironmentsPanel from '../components/ProjectEnvironmentsPanel';
+import ProjectSecretsPanel from '../components/ProjectSecretsPanel';
 import StatusBadge from '../components/StatusBadge';
 import type {
   Artifact,
@@ -17,7 +18,7 @@ import type {
   Run,
 } from '../types';
 
-type Tab = 'build' | 'runs' | 'deploy' | 'branches' | 'envs';
+type Tab = 'build' | 'runs' | 'deploy' | 'branches' | 'envs' | 'secrets';
 
 interface DeployForm {
   environment: string;
@@ -503,6 +504,13 @@ export default function ProjectDetailPage() {
           >
             环境配置 <span className="tab-count">{environments.length}</span>
           </button>
+          <button
+            type="button"
+            className={tab === 'secrets' ? 'tab active' : 'tab'}
+            onClick={() => setTab('secrets')}
+          >
+            构建变量
+          </button>
         </div>
 
         {tab === 'branches' && (
@@ -518,6 +526,8 @@ export default function ProjectDetailPage() {
         {tab === 'envs' && (
           <ProjectEnvironmentsPanel projectId={projectId} onChanged={() => setEnvKey((value) => value + 1)} />
         )}
+
+        {tab === 'secrets' && <ProjectSecretsPanel projectId={projectId} />}
 
         {tab === 'build' && (
           <div className="table-wrap">

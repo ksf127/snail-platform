@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import { api, errorMessage, formatTime, queryString } from '../api';
 import { canWrite, isAdmin, useAuth } from '../auth-context';
 import Pagination from '../components/Pagination';
-import type { PageView, Pipeline, PipelineSide, PipelineStep, PipelineTemplateView, Project, ProjectBranch, Repo, Run } from '../types';
+import type { PageView, Pipeline, PipelineSide, PipelineStep, PipelineTemplateView, PipelineYamlView, Project, ProjectBranch, Repo, Run } from '../types';
 
 const DEFAULT_DEFINITION = {
   steps: [
@@ -26,6 +26,7 @@ const EMPTY_FORM = {
   executorType: 'DOCKER',
   side: 'BACKEND' as PipelineSide,
   definitionJson: JSON.stringify(DEFAULT_DEFINITION, null, 2),
+  configPath: '',
   enabled: true,
 };
 
@@ -79,6 +80,9 @@ export default function PipelinesPage() {
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState({ ...EMPTY_FORM });
+  const [yamlText, setYamlText] = useState('');
+  const [yamlBusy, setYamlBusy] = useState(false);
+  const [yamlSource, setYamlSource] = useState<string | null>(null);
   const [triggering, setTriggering] = useState<Pipeline | null>(null);
   const [triggerBranch, setTriggerBranch] = useState('');
   const [triggerSha, setTriggerSha] = useState('');
@@ -264,6 +268,9 @@ export default function PipelinesPage() {
   }, [applied, repos, projects]);
 
   const parsedSteps = useMemo<PipelineStep[] | null>(() => {
+    if (!form.definitionJson.trim()) {
+      return null;
+    }
     try {
       const parsed = JSON.parse(form.definitionJson) as { steps?: PipelineStep[] };
       return Array.isArray(parsed.steps) ? parsed.steps : null;
@@ -299,6 +306,8 @@ export default function PipelinesPage() {
   function startCreate() {
     setEditingId(null);
     setForm({ ...EMPTY_FORM });
+    setYamlText('');
+    setYamlSource(null);
     setTemplateStack('AUTO');
     setTemplateSource(null);
     suggestedName.current = null;
@@ -308,6 +317,8 @@ export default function PipelinesPage() {
   function startEdit(pipeline: Pipeline) {
     setEditingId(pipeline.id);
     setTemplateSource(null);
+    setYamlText('');
+    setYamlSource(null);
     setForm({
       projectId: String(pipeline.projectId),
       repoId: pipeline.repoId ? String(pipeline.repoId) : '',
@@ -317,6 +328,7 @@ export default function PipelinesPage() {
       executorType: pipeline.executorType,
       side: pipeline.side,
       definitionJson: pipeline.definitionJson,
+      configPath: pipeline.configPath ?? '',
       enabled: pipeline.enabled,
     });
     setShowForm(true);
@@ -330,16 +342,21 @@ export default function PipelinesPage() {
     }
     setError(null);
     setNotice(null);
-    let parsed: { steps?: PipelineStep[] };
-    try {
-      parsed = JSON.parse(form.definitionJson) as { steps?: PipelineStep[] };
-    } catch {
-      setError('流水线定义不是合法 JSON');
-      return;
-    }
-    if (!parsed.steps || parsed.steps.length === 0) {
-      setError('流水线至少需要一个 step');
-      return;
+    const useRepoConfig = Boolean(form.configPath.trim());
+    let definitionJson = '';
+    if (!useRepoConfig || form.definitionJson.trim()) {
+      let parsed: { steps?: PipelineStep[] };
+      try {
+        parsed = JSON.parse(form.definitionJson || '{}') as { steps?: PipelineStep[] };
+      } catch {
+        setError('流水线定义不是合法 JSON');
+        return;
+      }
+      if (!parsed.steps || parsed.steps.length === 0) {
+        setError('流水线至少需要一个 step，或填写仓库内配置路径');
+        return;
+      }
+      definitionJson = JSON.stringify(parsed);
     }
     try {
       const body = {
@@ -350,7 +367,8 @@ export default function PipelinesPage() {
         triggerType: form.triggerType,
         executorType: form.executorType,
         side: form.side,
-        definitionJson: JSON.stringify(parsed),
+        definitionJson,
+        configPath: form.configPath.trim() || null,
         enabled: form.enabled,
       };
       if (editingId) {
@@ -401,6 +419,83 @@ export default function PipelinesPage() {
       setNotice(`已触发构建 #${run.buildNo}（runId=${run.id}），可前往运行记录查看`);
     } catch (err) {
       setError(errorMessage(err));
+    }
+  }
+
+  async function loadYaml() {
+    if (!editingId) {
+      return;
+    }
+    setYamlBusy(true);
+    try {
+      const view = await api.get<PipelineYamlView>(`/pipelines/${editingId}/yaml`);
+      setYamlText(view.yaml);
+      setYamlSource(view.source);
+      setError(null);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setYamlBusy(false);
+    }
+  }
+
+  async function importYaml() {
+    if (!editingId) {
+      return;
+    }
+    if (!yamlText.trim()) {
+      setError('请先粘贴或读取 YAML 内容');
+      return;
+    }
+    setYamlBusy(true);
+    try {
+      const view = await api.put<PipelineYamlView>(`/pipelines/${editingId}/yaml`, { yaml: yamlText });
+      setForm((value) => ({ ...value, definitionJson: view.definitionJson }));
+      setYamlSource(view.source);
+      setNotice('YAML 已导入，步骤定义已更新');
+      setError(null);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setYamlBusy(false);
+    }
+  }
+
+  async function syncYaml() {
+    if (!editingId) {
+      return;
+    }
+    if (!form.configPath.trim()) {
+      setError('请先填写配置路径（例如 .snail/pipeline.yml）');
+      return;
+    }
+    setYamlBusy(true);
+    try {
+      // 同步使用已保存的配置路径，先落库再读取远端 YAML。
+      await api.put<Pipeline>(`/pipelines/${editingId}`, {
+        projectId: Number(form.projectId),
+        repoId: form.repoId ? Number(form.repoId) : null,
+        name: form.name.trim(),
+        branch: form.branch.trim(),
+        triggerType: form.triggerType,
+        executorType: form.executorType,
+        side: form.side,
+        definitionJson: form.definitionJson.trim() || '',
+        configPath: form.configPath.trim(),
+        enabled: form.enabled,
+      });
+      const view = await api.post<PipelineYamlView>(`/pipelines/${editingId}/yaml/sync`);
+      setYamlText(view.yaml);
+      setForm((value) => ({ ...value, definitionJson: view.definitionJson }));
+      setYamlSource(view.source);
+      setNotice(`已从 ${view.source} 同步配置`);
+      setError(null);
+      await load();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setYamlBusy(false);
     }
   }
 
@@ -525,6 +620,17 @@ export default function PipelinesPage() {
                 <option value="JENKINS">JENKINS</option>
               </select>
             </label>
+            <label className="field full">
+              <span>配置路径（可选，配置即代码）</span>
+              <input
+                value={form.configPath}
+                placeholder=".snail/pipeline.yml"
+                onChange={(e) => setForm({ ...form, configPath: e.target.value })}
+              />
+              <span className="muted field-hint">
+                填写后，构建时以仓库该分支/提交中的 YAML 为准；留空则使用下方平台内步骤定义。
+              </span>
+            </label>
             <label className="field checkbox">
               <input
                 type="checkbox"
@@ -617,6 +723,37 @@ export default function PipelinesPage() {
                     onChange={(e) => setForm({ ...form, definitionJson: e.target.value })}
                   />
                 </div>
+                {editingId !== null && (
+                  <div className="field full">
+                    <span className="toolbar" style={{ justifyContent: 'space-between' }}>
+                      <span>配置即代码（YAML）</span>
+                      <span className="inline-form">
+                        <button type="button" className="btn ghost small"
+                          onClick={() => void loadYaml()} disabled={yamlBusy}>
+                          读取当前
+                        </button>
+                        <button type="button" className="btn ghost small"
+                          onClick={() => void syncYaml()} disabled={yamlBusy || !form.configPath.trim()}>
+                          从仓库同步
+                        </button>
+                        <button type="button" className="btn small"
+                          onClick={() => void importYaml()} disabled={yamlBusy || !yamlText.trim()}>
+                          导入 YAML
+                        </button>
+                      </span>
+                    </span>
+                    <textarea
+                      className="mono"
+                      value={yamlText}
+                      spellCheck={false}
+                      placeholder={'steps:\n  - name: build\n    image: maven:3.9-eclipse-temurin-17\n    commands:\n      - mvn -B package\n    artifacts:\n      - target/*.jar'}
+                      onChange={(e) => setYamlText(e.target.value)}
+                    />
+                    <span className="muted field-hint">
+                      {yamlSource ? `来源：${yamlSource}` : '导入会覆盖上方 JSON；配置路径非空时，构建始终以仓库 YAML 为准。'}
+                    </span>
+                  </div>
+                )}
               </>
             )}
           </div>
@@ -638,7 +775,14 @@ export default function PipelinesPage() {
                   ))}
                 </div>
               )}
-              {!parsedSteps && <div className="alert">JSON 解析失败，请检查括号与逗号</div>}
+              {!parsedSteps && (form.configPath.trim() && !form.definitionJson.trim()
+                ? <div className="alert info">已启用仓库配置：保存后点击「从仓库同步」即可读取并校验步骤。</div>
+                : <div className="alert">JSON 解析失败，请检查括号与逗号</div>)}
+              {form.configPath.trim() && (
+                <div className="alert info">
+                  当前流水线以仓库文件 <code>{form.configPath.trim()}</code> 为准；上方 JSON 仅用于本地预览。
+                </div>
+              )}
 
               <div className="form-actions">
                 <button type="submit" className="btn">

@@ -1,6 +1,7 @@
 package com.snail.platform.worker.executor;
 
 import com.snail.platform.common.build.BuildStep;
+import com.snail.platform.common.build.RepoUrls;
 import com.snail.platform.common.model.ExecutorType;
 import com.snail.platform.worker.build.BuildContext;
 import com.snail.platform.worker.build.LogSink;
@@ -55,7 +56,12 @@ public class DockerBuildExecutor implements BuildExecutor {
                     // 源码永远挂到 /workspace，工作目录再切到 workDir，
                     // 这样单仓场景下 workDir=/workspace/web 才能用到仓库里的子目录。
                     "-v", context.getSourceDir().toAbsolutePath() + ":" + WORKSPACE,
-                    "-w", workDir,
+                    "-w", workDir));
+            context.getSecrets().forEach((name, value) -> {
+                command.add("-e");
+                command.add(name + "=" + value);
+            });
+            command.addAll(List.of(
                     step.getImage(),
                     "sh", "-lc", script));
             int exit = ProcessRunner.run(command, context.getRootDir(), sink, timeoutSeconds);
@@ -75,14 +81,17 @@ public class DockerBuildExecutor implements BuildExecutor {
     }
 
     private void cloneRepository(BuildContext context, LogSink sink) throws Exception {
+        String cloneUrl = RepoUrls.withCredentials(context.getRepoUrl(),
+                context.getRepoUsername(), context.getRepoToken());
         List<String> command = new ArrayList<>(List.of("git", "clone", "--depth", "1"));
         if (context.getBranch() != null && !context.getBranch().isBlank()) {
             command.add("--branch");
             command.add(context.getBranch());
         }
-        command.add(context.getRepoUrl());
+        command.add(cloneUrl);
         command.add(context.getSourceDir().toAbsolutePath().toString());
-        sink.line("[docker] 克隆仓库 " + context.getRepoUrl() + " (分支 " + context.getBranch() + ")");
+        sink.line("[docker] 克隆仓库 " + RepoUrls.mask(context.getRepoUrl())
+                + " (分支 " + context.getBranch() + ")");
         int exit = ProcessRunner.run(command, context.getRootDir(), sink, timeoutSeconds);
         if (exit != 0) {
             throw new IllegalStateException("git clone 失败，退出码 " + exit);
