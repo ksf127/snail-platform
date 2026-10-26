@@ -10,6 +10,7 @@ public record PipelineRequest(
         @NotBlank(message = "分支不能为空") String branch,
         @NotBlank(message = "触发方式不能为空") String triggerType,
         @NotBlank(message = "执行器类型不能为空") String executorType,
+        String side,
         @NotBlank(message = "流水线定义不能为空") String definitionJson,
         Boolean enabled
 ) {

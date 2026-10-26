@@ -20,17 +20,18 @@ public class K8sDeploymentOperator {
     private final K8sClientFactory clientFactory;
     private final ObjectMapper objectMapper;
 
-    public void updateImage(String deploymentName, String image, int replicas) {
+    /** 按环境指定的 namespace 更新镜像与副本；未指定时回退到全局 namespace。 */
+    public void updateImage(String namespace, String deploymentName, String image, int replicas) {
+        String target = namespace == null || namespace.isBlank() ? clientFactory.namespace() : namespace;
         try (KubernetesClient client = clientFactory.create()) {
-            String namespace = clientFactory.namespace();
-            Deployment deployment = client.apps().deployments().inNamespace(namespace)
+            Deployment deployment = client.apps().deployments().inNamespace(target)
                     .withName(deploymentName).get();
             if (deployment == null) {
-                throw new IllegalStateException("K8s Deployment 不存在: " + namespace + "/" + deploymentName);
+                throw new IllegalStateException("K8s Deployment 不存在: " + target + "/" + deploymentName);
             }
             List<Container> containers = deployment.getSpec().getTemplate().getSpec().getContainers();
             if (containers == null || containers.isEmpty()) {
-                throw new IllegalStateException("Deployment 未定义容器: " + namespace + "/" + deploymentName);
+                throw new IllegalStateException("Deployment 未定义容器: " + target + "/" + deploymentName);
             }
             Map<String, Object> containerPatch = new LinkedHashMap<>();
             containerPatch.put("name", containers.get(0).getName());
@@ -45,7 +46,7 @@ public class K8sDeploymentOperator {
             spec.put("template", template);
             Map<String, Object> patch = Map.of("spec", spec);
 
-            client.apps().deployments().inNamespace(namespace).withName(deploymentName)
+            client.apps().deployments().inNamespace(target).withName(deploymentName)
                     .patch(PatchContext.of(PatchType.STRATEGIC_MERGE), objectMapper.writeValueAsString(patch));
         } catch (IllegalStateException ex) {
             throw ex;

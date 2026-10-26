@@ -5,6 +5,7 @@ import com.snail.platform.common.api.BizException;
 import com.snail.platform.common.model.RepoProvider;
 import com.snail.platform.control.dto.BindRepoRequest;
 import com.snail.platform.control.dto.CreateRepoRequest;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.RepoCreatedView;
 import com.snail.platform.control.dto.RepoView;
 import com.snail.platform.control.entity.RepoEntity;
@@ -16,6 +17,7 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -33,6 +35,23 @@ public class RepoService {
             wrapper.eq(RepoEntity::getProjectId, projectId);
         }
         return repoMapper.selectList(wrapper).stream().map(this::toView).toList();
+    }
+
+    public PageView<RepoView> page(int page, int size, Long projectId, String keyword, String provider) {
+        LambdaQueryWrapper<RepoEntity> wrapper = new LambdaQueryWrapper<>();
+        if (projectId != null) {
+            wrapper.eq(RepoEntity::getProjectId, projectId);
+        }
+        if (StringUtils.hasText(keyword)) {
+            String value = keyword.trim();
+            wrapper.and(w -> w.like(RepoEntity::getName, value)
+                    .or().like(RepoEntity::getCloneUrl, value));
+        }
+        if (StringUtils.hasText(provider)) {
+            wrapper.eq(RepoEntity::getProvider, provider.trim().toUpperCase(Locale.ROOT));
+        }
+        wrapper.orderByDesc(RepoEntity::getId);
+        return PageView.of(repoMapper.selectPage(PageView.paging(page, size), wrapper), this::toView);
     }
 
     public RepoEntity get(Long id) {
@@ -99,6 +118,11 @@ public class RepoService {
                     }
                 });
         return repoMapper.selectList(wrapper);
+    }
+
+    /** 当前环境是否配置了 Gitea（未配置时只能手工绑定已有仓库）。 */
+    public boolean giteaConfigured() {
+        return giteaClient.isConfigured();
     }
 
     private RepoView toView(RepoEntity repo) {

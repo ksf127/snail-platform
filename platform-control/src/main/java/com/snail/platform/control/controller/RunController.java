@@ -2,6 +2,7 @@ package com.snail.platform.control.controller;
 
 import com.snail.platform.common.api.ApiResult;
 import com.snail.platform.control.dto.ArtifactView;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.RunView;
 import com.snail.platform.control.service.RunService;
 import lombok.RequiredArgsConstructor;
@@ -24,9 +25,16 @@ public class RunController {
     private final RunService runService;
 
     @GetMapping("/runs")
-    public ApiResult<List<RunView>> list(@RequestParam(required = false) Long pipelineId,
-                                         @RequestParam(defaultValue = "50") int limit) {
-        return ApiResult.ok(runService.list(pipelineId, limit));
+    public ApiResult<PageView<RunView>> list(@RequestParam(defaultValue = "1") int page,
+                                             @RequestParam(defaultValue = "10") int size,
+                                             @RequestParam(required = false) Long pipelineId,
+                                             @RequestParam(required = false) Long projectId,
+                                             @RequestParam(required = false) String branch,
+                                             @RequestParam(required = false) String status,
+                                             @RequestParam(required = false) String triggerType,
+                                             @RequestParam(required = false) String keyword) {
+        return ApiResult.ok(runService.page(page, size, pipelineId, projectId, branch,
+                status, triggerType, keyword));
     }
 
     @GetMapping("/runs/{id}")

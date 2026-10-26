@@ -1,16 +1,22 @@
 package com.snail.platform.control.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.snail.platform.common.api.BizException;
 import com.snail.platform.common.build.BuildMessage;
 import com.snail.platform.common.build.BuildStep;
 import com.snail.platform.common.build.PipelineDefinition;
 import com.snail.platform.common.model.ExecutorType;
+import com.snail.platform.common.model.PipelineSide;
 import com.snail.platform.common.model.RunStatus;
 import com.snail.platform.common.model.TriggerType;
+import com.snail.platform.control.dto.MonorepoPipelineRequest;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.PipelineRequest;
+import com.snail.platform.control.dto.PipelineTemplateView;
 import com.snail.platform.control.entity.PipelineEntity;
 import com.snail.platform.control.entity.PipelineRunEntity;
+import com.snail.platform.control.entity.ProjectBranchEntity;
 import com.snail.platform.control.entity.RepoEntity;
 import com.snail.platform.control.integration.BuildMessagePublisher;
 import com.snail.platform.control.mapper.PipelineMapper;
@@ -21,9 +27,11 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 
@@ -35,6 +43,8 @@ public class PipelineService {
     private final PipelineRunMapper pipelineRunMapper;
     private final RepoMapper repoMapper;
     private final ProjectService projectService;
+    private final ProjectBranchService projectBranchService;
+    private final PipelineTemplateService pipelineTemplateService;
     private final BuildMessagePublisher messagePublisher;
     private final ObjectMapper objectMapper;
 
@@ -47,7 +57,78 @@ public class PipelineService {
         if (projectId != null) {
             wrapper.eq(PipelineEntity::getProjectId, projectId);
         }
-        return pipelineMapper.selectList(wrapper);
+        List<PipelineEntity> rows = pipelineMapper.selectList(wrapper);
+        fillTeams(rows);
+        return rows;
+    }
+
+    public PageView<PipelineEntity> page(int page, int size, Long projectId, Long repoId,
+                                         String keyword, String triggerType, String executorType,
+                                         Boolean enabled, String side, String branch, String team) {
+        LambdaQueryWrapper<PipelineEntity> wrapper = new LambdaQueryWrapper<>();
+        if (projectId != null) {
+            wrapper.eq(PipelineEntity::getProjectId, projectId);
+        }
+        if (repoId != null) {
+            wrapper.eq(PipelineEntity::getRepoId, repoId);
+        }
+        if (StringUtils.hasText(keyword)) {
+            String value = keyword.trim();
+            wrapper.and(w -> w.like(PipelineEntity::getName, value)
+                    .or().like(PipelineEntity::getBranch, value));
+        }
+        if (StringUtils.hasText(triggerType)) {
+            wrapper.eq(PipelineEntity::getTriggerType, triggerType.trim().toUpperCase(Locale.ROOT));
+        }
+        if (StringUtils.hasText(executorType)) {
+            wrapper.eq(PipelineEntity::getExecutorType, executorType.trim().toUpperCase(Locale.ROOT));
+        }
+        if (StringUtils.hasText(side)) {
+            wrapper.eq(PipelineEntity::getSide, side.trim().toUpperCase(Locale.ROOT));
+        }
+        if (enabled != null) {
+            wrapper.eq(PipelineEntity::getEnabled, enabled);
+        }
+        if (StringUtils.hasText(branch)) {
+            wrapper.eq(PipelineEntity::getBranch, branch.trim());
+        }
+        if (StringUtils.hasText(team)) {
+            List<ProjectBranchEntity> owned = projectBranchService.listByTeam(projectId, team);
+            if (owned.isEmpty()) {
+                return new PageView<>(List.of(), 0, Math.max(1, page),
+                        Math.min(100, Math.max(1, size)));
+            }
+            wrapper.and(w -> {
+                for (int i = 0; i < owned.size(); i++) {
+                    ProjectBranchEntity row = owned.get(i);
+                    if (i == 0) {
+                        w.eq(PipelineEntity::getProjectId, row.getProjectId())
+                                .eq(PipelineEntity::getBranch, row.getBranch());
+                    } else {
+                        w.or(o -> o.eq(PipelineEntity::getProjectId, row.getProjectId())
+                                .eq(PipelineEntity::getBranch, row.getBranch()));
+                    }
+                }
+            });
+        }
+        wrapper.orderByDesc(PipelineEntity::getId);
+        PageView<PipelineEntity> view = PageView.of(pipelineMapper.selectPage(PageView.paging(page, size), wrapper));
+        fillTeams(view.items());
+        return view;
+    }
+
+    /** 回填分支归属团队，便于列表按团队识别维护方。 */
+    private void fillTeams(List<PipelineEntity> pipelines) {
+        if (pipelines == null || pipelines.isEmpty()) {
+            return;
+        }
+        List<Long> projectIds = pipelines.stream().map(PipelineEntity::getProjectId)
+                .filter(java.util.Objects::nonNull).distinct().toList();
+        var teams = projectBranchService.teamMap(projectIds);
+        pipelines.forEach(p -> {
+            var branchTeams = teams.get(p.getProjectId());
+            p.setTeam(branchTeams == null ? null : branchTeams.get(p.getBranch()));
+        });
     }
 
     public PipelineEntity get(Long id) {
@@ -68,7 +149,48 @@ public class PipelineService {
         pipeline.setCreatedAt(LocalDateTime.now());
         pipeline.setUpdatedAt(LocalDateTime.now());
         pipelineMapper.insert(pipeline);
+        projectBranchService.ensure(pipeline.getProjectId(), pipeline.getBranch());
         return pipeline;
+    }
+
+    /**
+     * 单仓（前后端同一个仓库）一键生成两条流水线：
+     * 前端在子目录（默认 web）构建，后端在仓库根目录构建，各自独立触发与发布。
+     * 已存在对应端流水线时跳过，两端都已存在则直接报错，避免重复生成。
+     */
+    @Transactional
+    public List<PipelineEntity> createMonorepo(MonorepoPipelineRequest request) {
+        projectService.get(request.projectId());
+        RepoEntity repo = request.repoId() == null ? null : repoMapper.selectById(request.repoId());
+        if (repo == null) {
+            throw BizException.badRequest("请选择关联仓库");
+        }
+        if (!repo.getProjectId().equals(request.projectId())) {
+            throw BizException.badRequest("仓库不属于该项目");
+        }
+        List<PipelineEntity> existing = pipelineMapper.selectList(new LambdaQueryWrapper<PipelineEntity>()
+                .eq(PipelineEntity::getRepoId, repo.getId()));
+        boolean hasFrontend = existing.stream().anyMatch(p -> PipelineSide.FRONTEND.name().equals(p.getSide()));
+        boolean hasBackend = existing.stream().anyMatch(p -> PipelineSide.BACKEND.name().equals(p.getSide()));
+        if (hasFrontend && hasBackend) {
+            throw BizException.badRequest("仓库 " + repo.getName() + " 已有前后端流水线，请直接编辑或删除后重试");
+        }
+        String branch = StringUtils.hasText(request.branch()) ? request.branch().trim()
+                : (StringUtils.hasText(repo.getDefaultBranch()) ? repo.getDefaultBranch() : "main");
+        String triggerType = StringUtils.hasText(request.triggerType())
+                ? request.triggerType() : TriggerType.MANUAL.name();
+
+        List<PipelineEntity> created = new ArrayList<>();
+        for (PipelineTemplateView view
+                : pipelineTemplateService.suggestMonorepo(repo, request.frontendDir(), request.backendStack())) {
+            if ((PipelineSide.FRONTEND.name().equals(view.side()) && hasFrontend)
+                    || (PipelineSide.BACKEND.name().equals(view.side()) && hasBackend)) {
+                continue;
+            }
+            created.add(create(new PipelineRequest(request.projectId(), repo.getId(), view.name(), branch,
+                    triggerType, view.executorType(), view.side(), view.definitionJson(), true)));
+        }
+        return created;
     }
 
     public PipelineEntity update(Long id, PipelineRequest request) {
@@ -81,6 +203,7 @@ public class PipelineService {
         apply(pipeline, request, definition);
         pipeline.setUpdatedAt(LocalDateTime.now());
         pipelineMapper.updateById(pipeline);
+        projectBranchService.ensure(pipeline.getProjectId(), pipeline.getBranch());
         return pipeline;
     }
 
@@ -156,8 +279,20 @@ public class PipelineService {
         String executor = StringUtils.hasText(request.executorType())
                 ? request.executorType() : defaultExecutor;
         pipeline.setExecutorType(parseEnum(ExecutorType.class, executor, "执行器类型").name());
+        pipeline.setSide(resolveSide(request));
         pipeline.setDefinitionJson(write(definition));
         pipeline.setEnabled(request.enabled() == null || request.enabled());
+    }
+
+    /** 未显式指定端时按步骤镜像推断：node/npm/yarn/pnpm/vite 视为前端。 */
+    private String resolveSide(PipelineRequest request) {
+        if (StringUtils.hasText(request.side())) {
+            return parseEnum(PipelineSide.class, request.side(), "所属端").name();
+        }
+        String json = request.definitionJson().toLowerCase(Locale.ROOT);
+        boolean frontend = json.contains("node:") || json.contains("npm ")
+                || json.contains("yarn ") || json.contains("pnpm ") || json.contains("vite");
+        return frontend ? PipelineSide.FRONTEND.name() : PipelineSide.BACKEND.name();
     }
 
     private void validateRepo(Long projectId, Long repoId) {

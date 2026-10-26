@@ -3,6 +3,7 @@ package com.snail.platform.control.controller;
 import com.snail.platform.common.api.ApiResult;
 import com.snail.platform.control.dto.DeploymentExecutionView;
 import com.snail.platform.control.dto.DeploymentRequest;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.entity.DeploymentEntity;
 import com.snail.platform.control.service.DeploymentService;
 import jakarta.validation.Valid;
@@ -26,8 +27,15 @@ public class DeploymentController {
     private final DeploymentService deploymentService;
 
     @GetMapping
-    public ApiResult<List<DeploymentEntity>> list(@RequestParam(required = false) Long projectId) {
-        return ApiResult.ok(deploymentService.list(projectId));
+    public ApiResult<PageView<DeploymentEntity>> list(@RequestParam(defaultValue = "1") int page,
+                                                      @RequestParam(defaultValue = "10") int size,
+                                                      @RequestParam(required = false) Long projectId,
+                                                      @RequestParam(required = false) String projectKeyword,
+                                                      @RequestParam(required = false) String environment,
+                                                      @RequestParam(required = false) String status,
+                                                      @RequestParam(required = false) String keyword) {
+        return ApiResult.ok(deploymentService.page(page, size, projectId, projectKeyword, environment,
+                status, keyword));
     }
 
     @PostMapping

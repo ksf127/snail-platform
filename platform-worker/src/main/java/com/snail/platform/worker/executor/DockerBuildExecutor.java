@@ -20,6 +20,8 @@ import java.util.List;
 @Component
 public class DockerBuildExecutor implements BuildExecutor {
 
+    private static final String WORKSPACE = "/workspace";
+
     private final long timeoutSeconds;
 
     public DockerBuildExecutor(@Value("${platform.executor.timeout-seconds:1800}") long timeoutSeconds) {
@@ -50,7 +52,9 @@ public class DockerBuildExecutor implements BuildExecutor {
             sink.line("[docker] 步骤 " + (i + 1) + "/" + steps.size() + ": " + step.getName());
             List<String> command = new ArrayList<>(List.of(
                     "docker", "run", "--rm",
-                    "-v", context.getSourceDir().toAbsolutePath() + ":" + workDir,
+                    // 源码永远挂到 /workspace，工作目录再切到 workDir，
+                    // 这样单仓场景下 workDir=/workspace/web 才能用到仓库里的子目录。
+                    "-v", context.getSourceDir().toAbsolutePath() + ":" + WORKSPACE,
                     "-w", workDir,
                     step.getImage(),
                     "sh", "-lc", script));

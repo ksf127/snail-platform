@@ -4,7 +4,15 @@ export interface ApiResult<T> {
   data: T;
 }
 
+export interface PageView<T> {
+  items: T[];
+  total: number;
+  page: number;
+  size: number;
+}
+
 export type Role = 'ADMIN' | 'DEVELOPER' | 'VIEWER';
+export type PipelineSide = 'FRONTEND' | 'BACKEND';
 export type RunStatus = 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | 'CANCELED';
 
 export interface User {
@@ -53,10 +61,51 @@ export interface Pipeline {
   branch: string;
   triggerType: string;
   executorType: string;
+  side: PipelineSide;
   definitionJson: string;
+  enabled: boolean;
+  team?: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 分支归属：同一项目不同分支可由不同团队维护。 */
+export interface ProjectBranch {
+  id: number;
+  projectId: number;
+  branch: string;
+  team: string | null;
+  ownerId: number | null;
+  ownerName: string | null;
+  description: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 项目环境：dev/test/prod 等，决定发布使用的 namespace 与默认副本。 */
+export interface ProjectEnvironment {
+  id: number;
+  projectId: number;
+  name: string;
+  displayName: string;
+  namespace: string;
+  defaultReplicas: number;
+  description: string | null;
+  sortOrder: number;
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface PipelineTemplateView {
+  stack: string;
+  side: PipelineSide;
+  name: string;
+  branch: string;
+  triggerType: string;
+  executorType: string;
+  definitionJson: string;
+  source: string;
 }
 
 export interface Run {
@@ -91,7 +140,8 @@ export interface Deployment {
   id: number;
   projectId: number;
   runId: number | null;
-  environment: 'DEV' | 'TEST' | 'PROD';
+  environment: string;
+  namespace: string | null;
   status: string;
   image: string;
   replicas: number;

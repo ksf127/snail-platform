@@ -6,8 +6,8 @@ const NAV_ITEMS = [
   { to: '/projects', label: '项目' },
   { to: '/repos', label: '代码仓库' },
   { to: '/pipelines', label: '流水线' },
-  { to: '/runs', label: '运行记录' },
   { to: '/deployments', label: '发布管理' },
+  { to: '/runs', label: '运行记录' },
 ];
 
 export default function Layout() {

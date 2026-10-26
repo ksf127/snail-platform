@@ -3,6 +3,7 @@ package com.snail.platform.control.controller;
 import com.snail.platform.common.api.ApiResult;
 import com.snail.platform.control.dto.BindRepoRequest;
 import com.snail.platform.control.dto.CreateRepoRequest;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.RepoCreatedView;
 import com.snail.platform.control.dto.RepoView;
 import com.snail.platform.control.service.RepoService;
@@ -19,6 +20,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/repos")
@@ -28,8 +30,18 @@ public class RepoController {
     private final RepoService repoService;
 
     @GetMapping
-    public ApiResult<List<RepoView>> list(@RequestParam(required = false) Long projectId) {
-        return ApiResult.ok(repoService.list(projectId));
+    public ApiResult<PageView<RepoView>> list(@RequestParam(defaultValue = "1") int page,
+                                              @RequestParam(defaultValue = "10") int size,
+                                              @RequestParam(required = false) Long projectId,
+                                              @RequestParam(required = false) String keyword,
+                                              @RequestParam(required = false) String provider) {
+        return ApiResult.ok(repoService.page(page, size, projectId, keyword, provider));
+    }
+
+    /** 仓库能力：前端据此决定是否展示「Gitea 创建」。 */
+    @GetMapping("/capabilities")
+    public ApiResult<Map<String, Boolean>> capabilities() {
+        return ApiResult.ok(Map.of("giteaConfigured", repoService.giteaConfigured()));
     }
 
     /** 通过 Gitea 创建仓库。Gitea 未配置时返回 503，请改用 /bind。 */

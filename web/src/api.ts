@@ -70,6 +70,19 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** 拼接查询串，自动忽略空值；false / 0 会被保留。 */
+export function queryString(params: Record<string, string | number | boolean | null | undefined>): string {
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') {
+      return;
+    }
+    search.set(key, String(value));
+  });
+  const text = search.toString();
+  return text ? `?${text}` : '';
+}
+
 export function formatTime(value: string | null): string {
   if (!value) {
     return '-';

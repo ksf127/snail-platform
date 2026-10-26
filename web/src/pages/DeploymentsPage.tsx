@@ -1,78 +1,136 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { api, errorMessage, formatTime } from '../api';
+import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
+import { Link } from 'react-router-dom';
+import { api, errorMessage, formatTime, queryString } from '../api';
 import { canWrite, useAuth } from '../auth-context';
+import Pagination from '../components/Pagination';
 import StatusBadge from '../components/StatusBadge';
-import type { Deployment, DeploymentExecution, Project } from '../types';
+import type {
+  Deployment,
+  DeploymentExecution,
+  PageView,
+  Project,
+  ProjectEnvironment,
+} from '../types';
 
-const EMPTY_FORM = {
-  projectId: '',
-  runId: '',
-  environment: 'DEV',
-  image: '',
-  replicas: '1',
-  note: '',
-};
+const EMPTY_FILTERS = { project: '', environment: '', status: '', keyword: '' };
 
+/** 发布管理：全部项目的发布记录；点击项目进入项目管理页做构建、日志与镜像下载。 */
 export default function DeploymentsPage() {
   const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [deployments, setDeployments] = useState<Deployment[]>([]);
-  const [projectFilter, setProjectFilter] = useState('');
-  const [form, setForm] = useState({ ...EMPTY_FORM });
-  const [showForm, setShowForm] = useState(false);
+  const [environments, setEnvironments] = useState<ProjectEnvironment[]>([]);
+  const [deployments, setDeployments] = useState<PageView<Deployment> | null>(null);
+  const [draft, setDraft] = useState({ ...EMPTY_FILTERS });
+  const [applied, setApplied] = useState({ ...EMPTY_FILTERS });
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(10);
+  const [reloadKey, setReloadKey] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [executingId, setExecutingId] = useState<number | null>(null);
   const [result, setResult] = useState<DeploymentExecution | null>(null);
 
-  const load = useCallback(async () => {
+  const loadProjects = useCallback(async () => {
     try {
-      const [projectList, deploymentList] = await Promise.all([
-        api.get<Project[]>('/projects'),
-        api.get<Deployment[]>(
-          projectFilter ? `/deployments?projectId=${projectFilter}` : '/deployments',
-        ),
-      ]);
-      setProjects(projectList);
-      setDeployments(deploymentList);
-      setError(null);
+      const all: Project[] = [];
+      let current = 1;
+      for (;;) {
+        const pageView = await api.get<PageView<Project>>(
+          `/projects${queryString({ page: current, size: 100 })}`,
+        );
+        const items = pageView.items ?? [];
+        all.push(...items);
+        if (items.length === 0 || all.length >= pageView.total) {
+          break;
+        }
+        current += 1;
+      }
+      setProjects(all);
     } catch (err) {
+      setProjects([]);
       setError(errorMessage(err));
     }
-  }, [projectFilter]);
+  }, []);
+
+  const loadEnvironments = useCallback(async () => {
+    try {
+      setEnvironments(await api.get<ProjectEnvironment[]>('/environments'));
+    } catch {
+      setEnvironments([]);
+    }
+  }, []);
+
+  const loadDeployments = useCallback(async () => {
+    try {
+      setDeployments(
+        await api.get<PageView<Deployment>>(
+          `/deployments${queryString({
+            page,
+            size,
+            projectKeyword: applied.project,
+            environment: applied.environment,
+            status: applied.status,
+            keyword: applied.keyword,
+          })}`,
+        ),
+      );
+    } catch (err) {
+      setDeployments(null);
+      setError(errorMessage(err));
+    }
+  }, [page, size, applied, reloadKey]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    void loadProjects();
+  }, [loadProjects]);
 
-  async function handleCreate(event: FormEvent) {
+  useEffect(() => {
+    void loadEnvironments();
+  }, [loadEnvironments]);
+
+  useEffect(() => {
+    void loadDeployments();
+  }, [loadDeployments]);
+
+  const environmentOptions = useMemo(
+    () => Array.from(new Set(environments.map((item) => item.name))).sort(),
+    [environments],
+  );
+
+  const projectMap = useMemo(() => {
+    const map = new Map<number, Project>();
+    projects.forEach((item) => map.set(item.id, item));
+    return map;
+  }, [projects]);
+
+  function applyFilters(event: FormEvent) {
     event.preventDefault();
-    setError(null);
-    setResult(null);
-    try {
-      await api.post<Deployment>('/deployments', {
-        projectId: Number(form.projectId),
-        runId: form.runId ? Number(form.runId) : null,
-        environment: form.environment,
-        image: form.image.trim(),
-        replicas: Number(form.replicas),
-        note: form.note || null,
-      });
-      setShowForm(false);
-      setForm({ ...EMPTY_FORM });
-      await load();
-    } catch (err) {
-      setError(errorMessage(err));
-    }
+    setPage(1);
+    setApplied({ ...draft });
+    setReloadKey((value) => value + 1);
+  }
+
+  function resetFilters() {
+    setDraft({ ...EMPTY_FILTERS });
+    setApplied({ ...EMPTY_FILTERS });
+    setPage(1);
+    setReloadKey((value) => value + 1);
   }
 
   async function handleExecute(deployment: Deployment) {
     setError(null);
+    setNotice(null);
     setResult(null);
+    setExecutingId(deployment.id);
     try {
       const execution = await api.post<DeploymentExecution>(`/deployments/${deployment.id}/execute`);
       setResult(execution);
-      await load();
+      setNotice(`发布单 #${deployment.id} 已执行`);
+      setReloadKey((value) => value + 1);
     } catch (err) {
       setError(errorMessage(err));
+    } finally {
+      setExecutingId(null);
     }
   }
 
@@ -81,29 +139,28 @@ export default function DeploymentsPage() {
       <div className="page-head">
         <div>
           <h1>发布管理</h1>
-          <p>记录发布单；配置 K8s 后直接更新 Deployment 镜像</p>
+          <p>全部项目的发布记录；点击项目进入项目管理，执行构建、查看日志与下载镜像</p>
         </div>
         <div className="toolbar">
-          <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}>
-            <option value="">全部项目</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.projectKey} · {project.name}
-              </option>
-            ))}
-          </select>
-          {canWrite(user) && (
-            <button type="button" className="btn" onClick={() => setShowForm((v) => !v)}>
-              {showForm ? '收起' : '新建发布单'}
-            </button>
-          )}
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => {
+              setError(null);
+              void loadProjects();
+              setReloadKey((value) => value + 1);
+            }}
+          >
+            刷新
+          </button>
         </div>
       </div>
 
       {error && <div className="alert">{error}</div>}
+      {notice && <div className="alert info">{notice}</div>}
 
       {result && (
-        <div className="card">
+        <div className="card" style={{ marginBottom: 16 }}>
           <div className="card-head">
             <h2>
               执行结果 <StatusBadge status={result.mode} />
@@ -113,132 +170,122 @@ export default function DeploymentsPage() {
             </button>
           </div>
           <p className="muted">{result.message}</p>
-          {result.commandPreview && (
-            <pre className="log">{result.commandPreview}</pre>
-          )}
+          {result.commandPreview && <pre className="log">{result.commandPreview}</pre>}
         </div>
-      )}
-
-      {showForm && (
-        <form className="card" onSubmit={handleCreate}>
-          <div className="card-head">
-            <h2>新建发布单</h2>
-            <span className="muted">K8s 未配置时执行会返回 PREVIEW 命令，不会真实变更集群</span>
-          </div>
-          <div className="form-grid">
-            <label className="field">
-              <span>所属项目</span>
-              <select
-                value={form.projectId}
-                onChange={(e) => setForm({ ...form, projectId: e.target.value })}
-                required
-              >
-                <option value="">请选择</option>
-                {projects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.projectKey} · {project.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field">
-              <span>环境</span>
-              <select
-                value={form.environment}
-                onChange={(e) => setForm({ ...form, environment: e.target.value })}
-              >
-                <option value="DEV">DEV</option>
-                <option value="TEST">TEST</option>
-                <option value="PROD">PROD</option>
-              </select>
-            </label>
-            <label className="field">
-              <span>镜像</span>
-              <input
-                value={form.image}
-                placeholder="registry.example.com/app:1.0.0"
-                onChange={(e) => setForm({ ...form, image: e.target.value })}
-                required
-              />
-            </label>
-            <label className="field">
-              <span>副本数</span>
-              <input
-                type="number"
-                min="1"
-                value={form.replicas}
-                onChange={(e) => setForm({ ...form, replicas: e.target.value })}
-              />
-            </label>
-            <label className="field">
-              <span>关联 Run ID（可选）</span>
-              <input
-                type="number"
-                min="1"
-                value={form.runId}
-                onChange={(e) => setForm({ ...form, runId: e.target.value })}
-              />
-            </label>
-            <label className="field full">
-              <span>备注</span>
-              <input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
-            </label>
-          </div>
-          <div className="form-actions">
-            <button type="submit" className="btn">
-              创建
-            </button>
-          </div>
-        </form>
       )}
 
       <div className="card">
         <div className="card-head">
           <h2>发布记录</h2>
-          <span className="muted">{deployments.length} 条</span>
+          <span className="muted">共 {deployments?.total ?? 0} 条</span>
         </div>
+
+        <form className="filters" onSubmit={applyFilters}>
+          <input
+            value={draft.project}
+            placeholder="搜索项目 Key / 名称"
+            onChange={(e) => setDraft({ ...draft, project: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                applyFilters(e);
+              }
+            }}
+          />
+          <select
+            value={draft.environment}
+            onChange={(e) => setDraft({ ...draft, environment: e.target.value })}
+          >
+            <option value="">全部环境</option>
+            {environmentOptions.map((item) => (
+              <option key={item} value={item}>
+                {item}
+              </option>
+            ))}
+          </select>
+          <select
+            value={draft.status}
+            onChange={(e) => setDraft({ ...draft, status: e.target.value })}
+          >
+            <option value="">全部状态</option>
+            <option value="PENDING">PENDING</option>
+            <option value="RUNNING">RUNNING</option>
+            <option value="SUCCESS">SUCCESS</option>
+            <option value="FAILED">FAILED</option>
+          </select>
+          <input
+            value={draft.keyword}
+            placeholder="搜索镜像 / 备注"
+            onChange={(e) => setDraft({ ...draft, keyword: e.target.value })}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                applyFilters(e);
+              }
+            }}
+          />
+          <button type="submit" className="btn small">
+            查询
+          </button>
+          <button type="button" className="btn ghost small" onClick={resetFilters}>
+            重置
+          </button>
+        </form>
+
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>ID</th>
+                <th>项目</th>
                 <th>环境</th>
+                <th>namespace</th>
                 <th>镜像</th>
                 <th>副本</th>
                 <th>状态</th>
                 <th>Run</th>
+                <th>备注</th>
                 <th>更新时间</th>
                 <th />
               </tr>
             </thead>
             <tbody>
-              {deployments.map((deployment) => (
-                <tr key={deployment.id}>
-                  <td>{deployment.id}</td>
-                  <td>{deployment.environment}</td>
-                  <td className="mono">{deployment.image}</td>
-                  <td>{deployment.replicas}</td>
-                  <td>
-                    <StatusBadge status={deployment.status} />
-                  </td>
-                  <td>{deployment.runId ?? '-'}</td>
-                  <td className="muted">{formatTime(deployment.updatedAt)}</td>
-                  <td>
-                    {canWrite(user) && (
-                      <button
-                        type="button"
-                        className="btn small"
-                        onClick={() => void handleExecute(deployment)}
-                      >
-                        执行
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {deployments.length === 0 && (
+              {(deployments?.items ?? []).map((deployment) => {
+                const project = projectMap.get(deployment.projectId);
+                return (
+                  <tr key={deployment.id}>
+                    <td>{deployment.id}</td>
+                    <td>
+                      <Link className="link-btn" to={`/projects/${deployment.projectId}`}>
+                        {project ? project.projectKey : `#${deployment.projectId}`}
+                      </Link>
+                    </td>
+                    <td>{deployment.environment}</td>
+                    <td className="mono">{deployment.namespace ?? '-'}</td>
+                    <td className="mono">{deployment.image}</td>
+                    <td>{deployment.replicas}</td>
+                    <td>
+                      <StatusBadge status={deployment.status} />
+                    </td>
+                    <td>{deployment.runId ?? '-'}</td>
+                    <td className="muted">{deployment.note ?? '-'}</td>
+                    <td className="muted">{formatTime(deployment.updatedAt)}</td>
+                    <td>
+                      {canWrite(user) && (
+                        <button
+                          type="button"
+                          className="btn small"
+                          disabled={executingId === deployment.id}
+                          onClick={() => void handleExecute(deployment)}
+                        >
+                          {executingId === deployment.id ? '执行中…' : '执行'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {(deployments?.items.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={8} className="empty">
+                  <td colSpan={11} className="empty">
                     暂无发布记录
                   </td>
                 </tr>
@@ -246,6 +293,14 @@ export default function DeploymentsPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={deployments}
+          onPageChange={setPage}
+          onSizeChange={(next) => {
+            setSize(next);
+            setPage(1);
+          }}
+        />
       </div>
     </>
   );

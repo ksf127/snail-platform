@@ -16,6 +16,8 @@ public class DeploymentEntity {
     private Long projectId;
     private Long runId;
     private String environment;
+    /** 发布时固化的 K8s namespace，来自项目环境配置。 */
+    private String namespace;
     private String status;
     private String image;
     private Integer replicas;

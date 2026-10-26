@@ -5,6 +5,7 @@ import DashboardPage from './pages/DashboardPage';
 import DeploymentsPage from './pages/DeploymentsPage';
 import LoginPage from './pages/LoginPage';
 import PipelinesPage from './pages/PipelinesPage';
+import ProjectDetailPage from './pages/ProjectDetailPage';
 import ProjectsPage from './pages/ProjectsPage';
 import ReposPage from './pages/ReposPage';
 import RunDetailPage from './pages/RunDetailPage';
@@ -28,6 +29,7 @@ export default function App() {
       <Route element={<Layout />}>
         <Route index element={<DashboardPage />} />
         <Route path="projects" element={<ProjectsPage />} />
+        <Route path="projects/:id" element={<ProjectDetailPage />} />
         <Route path="repos" element={<ReposPage />} />
         <Route path="pipelines" element={<PipelinesPage />} />
         <Route path="runs" element={<RunsPage />} />

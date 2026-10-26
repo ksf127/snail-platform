@@ -37,7 +37,7 @@
 
 | 方法 | 路径 | 角色 | 说明 |
 | --- | --- | --- | --- |
-| GET | `/api/pipelines?projectId=1` | 登录 | 流水线列表 |
+| GET | `/api/pipelines?projectId=1&branch=main&team=后端组` | 登录 | 流水线列表；`branch` 精确过滤，`team` 按「项目 + 分支」归属过滤 |
 | GET | `/api/pipelines/{id}` | 登录 | 详情 |
 | POST | `/api/pipelines` | ADMIN/DEVELOPER | 创建，字段见下 |
 | PUT | `/api/pipelines/{id}` | ADMIN/DEVELOPER | 修改（不允许移动项目） |
@@ -62,6 +62,30 @@
 
 `triggerType`：`MANUAL` / `WEBHOOK`；`executorType`：`DOCKER` / `K8S` / `JENKINS`。
 
+创建/修改会自动登记 `branch` 到项目分支归属（`*` 除外）。
+
+## 分支团队
+
+| 方法 | 路径 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/branches?projectId=1&team=后端组&keyword=ma` | 登录 | 分支归属列表，含负责人名称 |
+| POST | `/api/branches` | ADMIN/DEVELOPER | 登记：`{"projectId":1,"branch":"main","team":"后端组","ownerId":2,"description":""}` |
+| PUT | `/api/branches/{id}` | ADMIN/DEVELOPER | 修改；分支改名会级联更新同项目 `pipeline.branch` |
+| DELETE | `/api/branches/{id}` | ADMIN/DEVELOPER | 删除登记（不影响流水线） |
+
+约束：同一项目内 `branch` 唯一；`branch` 不能为 `*`；`ownerId` 必须是已存在用户。
+
+## 环境配置
+
+| 方法 | 路径 | 角色 | 说明 |
+| --- | --- | --- | --- |
+| GET | `/api/environments?projectId=1&enabled=true` | 登录 | 环境列表，按 `sortOrder` 排序 |
+| POST | `/api/environments` | ADMIN/DEVELOPER | 新增：`{"projectId":1,"name":"UAT","displayName":"预发环境","namespace":"demo-uat","defaultReplicas":1,"description":"","sortOrder":40,"enabled":true}` |
+| PUT | `/api/environments/{id}` | ADMIN/DEVELOPER | 修改；`name` 不可变更 |
+| DELETE | `/api/environments/{id}` | ADMIN/DEVELOPER | 删除（该环境下已有发布单不受影响） |
+
+新建项目自动生成 `DEV` / `TEST` / `PROD` 三套默认环境（namespace 为 `<projectKey>`、`<projectKey>-test`、`<projectKey>-prod`）。
+
 ## 运行记录
 
 | 方法 | 路径 | 角色 | 说明 |
@@ -81,7 +105,7 @@
 | POST | `/api/deployments` | ADMIN/DEVELOPER | 创建：`{"projectId":1,"runId":3,"environment":"DEV","image":"registry/app:1.0.0","replicas":2,"note":""}` |
 | POST | `/api/deployments/{id}/execute` | ADMIN/DEVELOPER | 执行；K8s 未配置时返回命令预览并标记为预览 |
 
-`environment`：`DEV` / `TEST` / `PROD`。
+`environment`：取项目「环境配置」中的启用环境编码（默认 `DEV` / `TEST` / `PROD`，也可自定义）。创建时服务端会校验环境存在且启用，并把该环境的 `namespace` 与默认副本固化到发布单；`replicas` 省略时使用环境默认值。
 
 ## 仪表盘
 

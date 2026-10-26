@@ -43,14 +43,18 @@ class PipelineServiceTest {
     @Mock
     private ProjectService projectService;
     @Mock
+    private ProjectBranchService projectBranchService;
+    @Mock
+    private PipelineTemplateService pipelineTemplateService;
+    @Mock
     private BuildMessagePublisher publisher;
 
     private PipelineService service;
 
     @BeforeEach
     void setUp() {
-        service = new PipelineService(pipelineMapper, runMapper, repoMapper, projectService, publisher,
-                new ObjectMapper());
+        service = new PipelineService(pipelineMapper, runMapper, repoMapper, projectService,
+                projectBranchService, pipelineTemplateService, publisher, new ObjectMapper());
         ReflectionTestUtils.setField(service, "defaultExecutor", "DOCKER");
     }
 

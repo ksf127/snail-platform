@@ -52,11 +52,13 @@ exchange: platform.build.dlx ──▶ queue: platform.build.queue.dlq
 | --- | --- |
 | `app_user` / `project_member` | 账号与项目成员角色 |
 | `project` | 项目 |
+| `project_branch` | 分支归属：分支、维护团队、负责人、说明 |
+| `project_environment` | 项目环境：编码、名称、K8s namespace、默认副本、排序、启用 |
 | `repo` | 仓库绑定（Gitea 或手工 cloneUrl），保存 webhook secret |
-| `pipeline` | 流水线定义（steps JSON）、分支、触发方式、执行器 |
+| `pipeline` | 流水线定义（steps JSON）、分支（精确或 `*`）、触发方式、执行器 |
 | `pipeline_run` | 每次运行，含 build_no、状态、commit、日志对象键 |
 | `build_artifact` | 制品索引，对象键指向 MinIO |
-| `deployment` | 发布单：环境、镜像、副本数、状态 |
+| `deployment` | 发布单：环境、namespace、镜像、副本数、状态 |
 
 表结构由 Flyway 管理，脚本位置 `platform-control/src/main/resources/db/migration`。
 
@@ -64,8 +66,27 @@ exchange: platform.build.dlx ──▶ queue: platform.build.queue.dlq
 
 - **新增执行器**：实现 `BuildExecutor`（`type()` + `execute()`），注册为 Bean，`ExecutorResolver` 会自动收集。
 - **新增代码托管**：实现类似 `GiteaClient` 的客户端并新增 webhook 控制器，仓库表用 `provider` 区分。
-- **新增环境**：`DeploymentEnvironment` 枚举 + 前端下拉，发布流程不变。
+- **新增环境**：在项目详情页「环境配置」新增编码、namespace、默认副本即可，不改代码；发布表单与筛选自动读取。
+- **新增分支团队**：在项目详情页「分支团队」登记分支与团队/负责人，流水线列表与团队筛选自动生效。
 - **前端新增页面**：`web/src/pages` 新增组件，在 `Layout` 菜单注册即可。
+
+## 多分支与多环境的处理方式
+
+### 分支归属（`project_branch`）
+
+- 流水线仍只存 `branch` 字符串（支持 `*`），分支归属独立成表，避免与流水线生命周期耦合。
+- 流水线创建/更新时 `ensure()` 自动补登记，保证「有流水线的分支一定有归属记录」。
+- 分支改名时在同一事务内执行 `UPDATE pipeline SET branch = 新值 WHERE project_id = ? AND branch = 旧值`。
+- 团队筛选按 `(project_id, branch)` 组合精确匹配，跨项目同名分支不会互相误命中。
+- 权限仍为项目级（`project_member`），分支归属只表达「谁维护」，不单独做分支级鉴权。
+
+### 环境配置（`project_environment`）
+
+- 环境从固定枚举改为项目级数据：编码、显示名、namespace、默认副本、排序、启用状态。
+- 新建项目自动补齐 `DEV` / `TEST` / `PROD`（幂等写入），已有项目由 Flyway V3 回填。
+- 创建发布单时校验环境存在且启用，并把 `namespace` 与副本数固化到 `deployment`，保证历史发布单不受环境后续修改影响。
+- 执行发布按 `deployment.namespace` 调用 K8s；为空时回退到 `K8S_NAMESPACE`。
+- 不引入环境审批流与多集群 kubeconfig：当前一个 control 实例对应一个集群，环境只区分 namespace。
 
 ## 已知边界
 

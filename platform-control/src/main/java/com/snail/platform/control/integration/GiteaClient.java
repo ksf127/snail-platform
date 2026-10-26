@@ -87,6 +87,26 @@ public class GiteaClient {
         }
     }
 
+    /** 判断仓库根目录下是否存在某个文件（用于自动识别构建类型）。 */
+    public boolean fileExists(String owner, String name, String path, String branch) {
+        requireConfigured();
+        boolean hasRef = branch != null && !branch.isBlank();
+        String uri = "/api/v1/repos/{owner}/{name}/raw/{path}" + (hasRef ? "?ref={ref}" : "");
+        try {
+            if (hasRef) {
+                client().get().uri(uri, owner, name, path, branch).retrieve().toBodilessEntity();
+            } else {
+                client().get().uri(uri, owner, name, path).retrieve().toBodilessEntity();
+            }
+            return true;
+        } catch (RestClientResponseException ex) {
+            if (ex.getStatusCode().value() == 404) {
+                return false;
+            }
+            throw BizException.unavailable("Gitea 读取文件失败: HTTP " + ex.getStatusCode().value());
+        }
+    }
+
     private RestClient client() {
         return RestClient.builder()
                 .baseUrl(baseUrl)

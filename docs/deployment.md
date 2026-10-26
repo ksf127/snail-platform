@@ -34,7 +34,7 @@ Docker 执行器通过 `docker run -v <宿主机路径>:/workspace` 挂载源码
 | `INTERNAL_TOKEN` | dev-internal-token | control 与 worker 的内部调用令牌 |
 | `EXECUTOR_DEFAULT` | DOCKER | 未声明执行器时的回退值 |
 | `EXECUTOR_TIMEOUT_SECONDS` | 1800 | 单个步骤/整个远端构建的超时 |
-| `K8S_KUBECONFIG` / `K8S_NAMESPACE` | 空 / platform | K8s 执行器与发布 |
+| `K8S_KUBECONFIG` / `K8S_NAMESPACE` | 空 / platform | K8s 执行器与发布；发布优先用环境配置的 namespace，为空时才回退到 `K8S_NAMESPACE` |
 | `JENKINS_URL` / `USER` / `TOKEN` / `JOB` | 空 | Jenkins 执行器 |
 
 完整清单见 `.env.example`。
@@ -65,7 +65,23 @@ git clone → docker run --rm -v <source>:<workDir> <image> sh -lc "<commands>"
 - 适用：已有 Jenkins 流水线与凭据体系，不想迁移。
 - `JENKINS_URL` 或 `JENKINS_JOB` 为空时，运行会直接失败并给出明确原因。
 
-## 四、生产部署建议
+## 四、多环境发布
+
+发布以「项目环境」为单位，每个环境对应一个 K8s namespace：
+
+| 环境编码 | 默认 namespace | 默认副本 |
+| --- | --- | --- |
+| `DEV` | `<projectKey>` | 1 |
+| `TEST` | `<projectKey>-test` | 1 |
+| `PROD` | `<projectKey>-prod` | 2 |
+
+- 环境在项目详情页「环境配置」维护，新建项目自动生成三套默认值，可以增删改或停用。
+- 创建发布单时选择已启用环境，服务端把 `namespace` 与默认副本固化到发布单；之后改环境配置不会影响历史发布单。
+- 执行发布单调用 `K8sDeploymentOperator.updateImage(namespace, deploymentName, image, replicas)`，`deploymentName` 使用项目 key。
+- 未配置 `K8S_KUBECONFIG` 时返回命令预览（`mode=PREVIEW`）；配置了但 namespace/Deployment 不存在时返回明确的失败原因，不会假成功。
+- 发布单列表展示环境与 namespace，可按环境筛选。
+
+## 五、生产部署建议
 
 1. **控制面与 worker 分开部署**，worker 单独一台构建节点或独立命名空间。
 2. 控制面只暴露 8088（或经网关），worker 的 8089 不对公网开放。
@@ -100,3 +116,7 @@ location / {
 
 - 表结构通过 Flyway 自动迁移，新增脚本放 `platform-control/src/main/resources/db/migration`，版本号递增。
 - 队列与交换机为 durable，升级期间消息不丢失；先停 worker 再停 control 可避免状态回写失败。
+- 从旧版本升级到含 `V3__branch_team_environment.sql` 的版本时，Flyway 会自动：
+  - 建 `project_branch` / `project_environment`，并按现有流水线的分支回填分支归属；
+  - 为每个项目补齐 `DEV` / `TEST` / `PROD` 三套环境；
+  - 给 `deployment` 增加 `namespace`，并按 `environment` 回填历史发布单的 namespace。

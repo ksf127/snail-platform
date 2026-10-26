@@ -1,16 +1,22 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { api, errorMessage } from '../api';
+import { api, errorMessage, queryString } from '../api';
 import { canWrite, isAdmin, useAuth } from '../auth-context';
-import type { Project, Repo, RepoCreated } from '../types';
+import Pagination from '../components/Pagination';
+import type { PageView, Project, Repo, RepoCreated } from '../types';
 
 const API_BASE = (import.meta.env.VITE_API_BASE ?? window.location.origin).replace(/\/$/, '');
 
 export default function ReposPage() {
   const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [repos, setRepos] = useState<Repo[]>([]);
-  const [projectId, setProjectId] = useState('');
+  const [repos, setRepos] = useState<PageView<Repo> | null>(null);
+  const [projectFilter, setProjectFilter] = useState('');
+  const [providerFilter, setProviderFilter] = useState('');
+  const [keyword, setKeyword] = useState('');
+  const [page, setPage] = useState(1);
+  const [size, setSize] = useState(10);
   const [mode, setMode] = useState<'gitea' | 'bind'>('gitea');
+  const [giteaEnabled, setGiteaEnabled] = useState<boolean | null>(null);
   const [showForm, setShowForm] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [created, setCreated] = useState<RepoCreated | null>(null);
@@ -29,21 +35,51 @@ export default function ReposPage() {
 
   const load = useCallback(async () => {
     try {
-      const [projectList, repoList] = await Promise.all([
-        api.get<Project[]>('/projects'),
-        api.get<Repo[]>(projectId ? `/repos?projectId=${projectId}` : '/repos'),
+      const [projectPage, repoPage, capabilities] = await Promise.all([
+        api.get<PageView<Project>>(`/projects${queryString({ page: 1, size: 100 })}`),
+        api.get<PageView<Repo>>(
+          `/repos${queryString({
+            page,
+            size,
+            projectId: projectFilter,
+            provider: providerFilter,
+            keyword,
+          })}`,
+        ),
+        api.get<{ giteaConfigured: boolean }>('/repos/capabilities'),
       ]);
-      setProjects(projectList);
-      setRepos(repoList);
+      setProjects(projectPage.items);
+      setRepos(repoPage);
+      setGiteaEnabled(capabilities.giteaConfigured);
       setError(null);
     } catch (err) {
       setError(errorMessage(err));
     }
-  }, [projectId]);
+  }, [page, size, projectFilter, providerFilter, keyword]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Gitea 未配置时无法自动建仓，强制切换到手工绑定。
+  useEffect(() => {
+    if (giteaEnabled === false && mode === 'gitea') {
+      setMode('bind');
+    }
+  }, [giteaEnabled, mode]);
+
+  function applyFilters(event: FormEvent) {
+    event.preventDefault();
+    setPage(1);
+    void load();
+  }
+
+  function resetFilters() {
+    setProjectFilter('');
+    setProviderFilter('');
+    setKeyword('');
+    setPage(1);
+  }
 
   async function handleCreate(event: FormEvent) {
     event.preventDefault();
@@ -71,6 +107,7 @@ export default function ReposPage() {
       setCreated(result);
       setShowForm(false);
       setForm((prev) => ({ ...prev, name: '', description: '', cloneUrl: '', webhookSecret: '' }));
+      setPage(1);
       await load();
     } catch (err) {
       setError(errorMessage(err));
@@ -94,17 +131,9 @@ export default function ReposPage() {
       <div className="page-head">
         <div>
           <h1>代码仓库</h1>
-          <p>通过 Gitea 创建仓库，或手工绑定已有 Git 地址</p>
+          <p>仓库必须归属项目：先在「项目」页建项目，再在这里绑定或创建仓库</p>
         </div>
         <div className="toolbar">
-          <select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
-            <option value="">全部项目</option>
-            {projects.map((project) => (
-              <option key={project.id} value={project.id}>
-                {project.projectKey} · {project.name}
-              </option>
-            ))}
-          </select>
           {canWrite(user) && (
             <button type="button" className="btn" onClick={() => setShowForm((v) => !v)}>
               {showForm ? '收起' : '添加仓库'}
@@ -127,13 +156,15 @@ export default function ReposPage() {
           <div className="card-head">
             <h2>添加仓库</h2>
             <div className="toolbar">
-              <button
-                type="button"
-                className={mode === 'gitea' ? 'btn small' : 'btn ghost small'}
-                onClick={() => setMode('gitea')}
-              >
-                Gitea 创建
-              </button>
+              {giteaEnabled !== false && (
+                <button
+                  type="button"
+                  className={mode === 'gitea' ? 'btn small' : 'btn ghost small'}
+                  onClick={() => setMode('gitea')}
+                >
+                  Gitea 创建
+                </button>
+              )}
               <button
                 type="button"
                 className={mode === 'bind' ? 'btn small' : 'btn ghost small'}
@@ -143,6 +174,12 @@ export default function ReposPage() {
               </button>
             </div>
           </div>
+          {giteaEnabled === false && (
+            <div className="alert info" style={{ marginBottom: 12 }}>
+              当前环境未配置 Gitea，无法自动创建仓库。GitHub 上已有的仓库请用「手工绑定」，
+              粘贴 Clone URL 即可登记。
+            </div>
+          )}
           <div className="form-grid">
             <label className="field">
               <span>所属项目</span>
@@ -158,6 +195,9 @@ export default function ReposPage() {
                   </option>
                 ))}
               </select>
+              <span className="muted field-hint">
+                仓库必须归属某个项目；还没有项目请先到「项目」页创建。
+              </span>
             </label>
             <label className="field">
               <span>仓库名</span>
@@ -216,7 +256,9 @@ export default function ReposPage() {
               提交
             </button>
             <span className="muted">
-              Gitea 未配置时，创建会失败并返回明确错误，请改用手工绑定。
+              {mode === 'bind'
+                ? '粘贴 GitHub / GitLab 等已有仓库的 Clone URL，无需在 Gitea 中创建。'
+                : '将在 Gitea 中新建仓库并返回 Webhook Secret。'}
             </span>
           </div>
         </form>
@@ -225,13 +267,40 @@ export default function ReposPage() {
       <div className="card">
         <div className="card-head">
           <h2>仓库列表</h2>
-          <span className="muted">{repos.length} 个</span>
+          <span className="muted">{repos?.total ?? 0} 个</span>
         </div>
+        <form className="filters" onSubmit={applyFilters}>
+          <input
+            value={keyword}
+            placeholder="搜索仓库名 / Clone URL"
+            onChange={(e) => setKeyword(e.target.value)}
+          />
+          <select value={projectFilter} onChange={(e) => setProjectFilter(e.target.value)}>
+            <option value="">全部项目</option>
+            {projects.map((project) => (
+              <option key={project.id} value={project.id}>
+                {project.projectKey} · {project.name}
+              </option>
+            ))}
+          </select>
+          <select value={providerFilter} onChange={(e) => setProviderFilter(e.target.value)}>
+            <option value="">全部来源</option>
+            <option value="GENERIC">GENERIC</option>
+            <option value="GITEA">GITEA</option>
+          </select>
+          <button type="submit" className="btn small">
+            查询
+          </button>
+          <button type="button" className="btn ghost small" onClick={resetFilters}>
+            重置
+          </button>
+        </form>
         <div className="table-wrap">
           <table>
             <thead>
               <tr>
                 <th>名称</th>
+                <th>所属项目</th>
                 <th>来源</th>
                 <th>Clone URL</th>
                 <th>默认分支</th>
@@ -240,9 +309,12 @@ export default function ReposPage() {
               </tr>
             </thead>
             <tbody>
-              {repos.map((repo) => (
+              {(repos?.items ?? []).map((repo) => (
                 <tr key={repo.id}>
                   <td>{repo.name}</td>
+                  <td className="muted">
+                    {projects.find((project) => project.id === repo.projectId)?.projectKey ?? '-'}
+                  </td>
                   <td>{repo.provider}</td>
                   <td className="mono">{repo.cloneUrl}</td>
                   <td>{repo.defaultBranch}</td>
@@ -264,9 +336,9 @@ export default function ReposPage() {
                   </td>
                 </tr>
               ))}
-              {repos.length === 0 && (
+              {(repos?.items.length ?? 0) === 0 && (
                 <tr>
-                  <td colSpan={6} className="empty">
+                  <td colSpan={7} className="empty">
                     暂无仓库
                   </td>
                 </tr>
@@ -274,6 +346,14 @@ export default function ReposPage() {
             </tbody>
           </table>
         </div>
+        <Pagination
+          page={repos}
+          onPageChange={setPage}
+          onSizeChange={(next) => {
+            setSize(next);
+            setPage(1);
+          }}
+        />
       </div>
     </>
   );

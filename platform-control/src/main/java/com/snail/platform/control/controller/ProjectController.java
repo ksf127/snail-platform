@@ -1,8 +1,10 @@
 package com.snail.platform.control.controller;
 
 import com.snail.platform.common.api.ApiResult;
+import com.snail.platform.control.dto.MemberBatchRequest;
 import com.snail.platform.control.dto.MemberRequest;
 import com.snail.platform.control.dto.MemberView;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.ProjectRequest;
 import com.snail.platform.control.entity.ProjectEntity;
 import com.snail.platform.control.security.AuthUser;
@@ -18,6 +20,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.List;
@@ -30,8 +33,11 @@ public class ProjectController {
     private final ProjectService projectService;
 
     @GetMapping
-    public ApiResult<List<ProjectEntity>> list() {
-        return ApiResult.ok(projectService.list());
+    public ApiResult<PageView<ProjectEntity>> list(@RequestParam(defaultValue = "1") int page,
+                                                   @RequestParam(defaultValue = "10") int size,
+                                                   @RequestParam(required = false) String keyword,
+                                                   @RequestParam(required = false) String status) {
+        return ApiResult.ok(projectService.page(page, size, keyword, status));
     }
 
     @GetMapping("/{id}")
@@ -61,8 +67,11 @@ public class ProjectController {
     }
 
     @GetMapping("/{id}/members")
-    public ApiResult<List<MemberView>> members(@PathVariable Long id) {
-        return ApiResult.ok(projectService.members(id));
+    public ApiResult<PageView<MemberView>> members(@PathVariable Long id,
+                                                   @RequestParam(defaultValue = "1") int page,
+                                                   @RequestParam(defaultValue = "10") int size,
+                                                   @RequestParam(required = false) String keyword) {
+        return ApiResult.ok(projectService.members(id, page, size, keyword));
     }
 
     @PostMapping("/{id}/members")
@@ -70,5 +79,24 @@ public class ProjectController {
     public ApiResult<MemberView> addMember(@PathVariable Long id,
                                            @Valid @RequestBody MemberRequest request) {
         return ApiResult.ok(projectService.addMember(id, request));
+    }
+
+    @GetMapping("/{id}/members/ids")
+    public ApiResult<List<Long>> memberIds(@PathVariable Long id) {
+        return ApiResult.ok(projectService.memberIds(id));
+    }
+
+    @PostMapping("/{id}/members/batch")
+    @PreAuthorize("hasAnyRole('ADMIN','DEVELOPER')")
+    public ApiResult<Integer> addMembers(@PathVariable Long id,
+                                         @Valid @RequestBody MemberBatchRequest request) {
+        return ApiResult.ok(projectService.addMembers(id, request));
+    }
+
+    @DeleteMapping("/{id}/members/batch")
+    @PreAuthorize("hasAnyRole('ADMIN','DEVELOPER')")
+    public ApiResult<Integer> removeMembers(@PathVariable Long id,
+                                            @RequestParam("userIds") List<Long> userIds) {
+        return ApiResult.ok(projectService.removeMembers(id, userIds));
     }
 }

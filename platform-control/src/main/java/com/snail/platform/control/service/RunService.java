@@ -1,9 +1,11 @@
 package com.snail.platform.control.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.snail.platform.common.api.BizException;
 import com.snail.platform.common.model.RunStatus;
 import com.snail.platform.control.dto.ArtifactView;
+import com.snail.platform.control.dto.PageView;
 import com.snail.platform.control.dto.RunView;
 import com.snail.platform.control.entity.BuildArtifactEntity;
 import com.snail.platform.control.entity.PipelineEntity;
@@ -14,9 +16,11 @@ import com.snail.platform.control.mapper.PipelineMapper;
 import com.snail.platform.control.mapper.PipelineRunMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.function.Function;
 import java.util.stream.Collectors;
@@ -45,6 +49,49 @@ public class RunService {
         Map<Long, PipelineEntity> pipelines = pipelineMapper.selectBatchIds(pipelineIds).stream()
                 .collect(Collectors.toMap(PipelineEntity::getId, Function.identity()));
         return runs.stream().map(run -> toView(run, pipelines.get(run.getPipelineId()))).toList();
+    }
+
+    public PageView<RunView> page(int page, int size, Long pipelineId, Long projectId, String branch,
+                                  String status, String triggerType, String keyword) {
+        int safePage = Math.max(1, page);
+        int safeSize = Math.min(100, Math.max(1, size));
+        LambdaQueryWrapper<PipelineRunEntity> wrapper = new LambdaQueryWrapper<>();
+        if (pipelineId != null) {
+            wrapper.eq(PipelineRunEntity::getPipelineId, pipelineId);
+        }
+        if (projectId != null) {
+            List<Long> pipelineIds = pipelineMapper.selectList(new LambdaQueryWrapper<PipelineEntity>()
+                            .select(PipelineEntity::getId)
+                            .eq(PipelineEntity::getProjectId, projectId))
+                    .stream().map(PipelineEntity::getId).toList();
+            if (pipelineIds.isEmpty()) {
+                return new PageView<>(List.of(), 0, safePage, safeSize);
+            }
+            wrapper.in(PipelineRunEntity::getPipelineId, pipelineIds);
+        }
+        if (StringUtils.hasText(branch)) {
+            wrapper.eq(PipelineRunEntity::getBranch, branch.trim());
+        }
+        if (StringUtils.hasText(status)) {
+            wrapper.eq(PipelineRunEntity::getStatus, status.trim().toUpperCase(Locale.ROOT));
+        }
+        if (StringUtils.hasText(triggerType)) {
+            wrapper.eq(PipelineRunEntity::getTriggerType, triggerType.trim().toUpperCase(Locale.ROOT));
+        }
+        if (StringUtils.hasText(keyword)) {
+            String value = keyword.trim();
+            wrapper.and(w -> w.like(PipelineRunEntity::getBranch, value)
+                    .or().like(PipelineRunEntity::getTriggeredBy, value)
+                    .or().like(PipelineRunEntity::getCommitSha, value));
+        }
+        wrapper.orderByDesc(PipelineRunEntity::getId);
+        Page<PipelineRunEntity> result = runMapper.selectPage(PageView.paging(page, size), wrapper);
+        List<Long> pipelineIds = result.getRecords().stream()
+                .map(PipelineRunEntity::getPipelineId).distinct().toList();
+        Map<Long, PipelineEntity> pipelines = pipelineIds.isEmpty() ? Map.of()
+                : pipelineMapper.selectBatchIds(pipelineIds).stream()
+                        .collect(Collectors.toMap(PipelineEntity::getId, Function.identity()));
+        return PageView.of(result, run -> toView(run, pipelines.get(run.getPipelineId())));
     }
 
     public RunView get(Long id) {
